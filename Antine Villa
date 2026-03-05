@@ -125,6 +125,16 @@ for line in blueprintData:gmatch("[^;]+") do
 end
 
 --====================================================
+-- SIZE CHECK TOLERANCE
+--====================================================
+local function sizeClose(a,b)
+	local tolerance = 0.01 -- strict tolerance
+	return math.abs(a.X-b.X)<=tolerance
+	   and math.abs(a.Y-b.Y)<=tolerance
+	   and math.abs(a.Z-b.Z)<=tolerance
+end
+
+--====================================================
 -- CRASH RECOVERY
 --====================================================
 local function vecClose(a,b,t)
@@ -147,7 +157,7 @@ local function recoverExisting()
 
 		for _,group in pairs(blueprint) do
 			if group.blockName ~= model.Name then continue end
-			if sizeToKeyExact(group.size) ~= sizeToKeyExact(size) then continue end
+			if not sizeClose(group.size, size) then continue end
 
 			for _,slot in ipairs(group.slots) do
 				if slot.filled then continue end
@@ -187,6 +197,9 @@ local layout = Instance.new("UIListLayout")
 layout.Padding = UDim.new(0,4)
 layout.Parent = frame
 
+--====================================================
+-- GUI UPDATE
+--====================================================
 local function refreshGUI()
 	for _,child in ipairs(frame:GetChildren()) do
 		if child:IsA("TextLabel") and child ~= title then
@@ -217,25 +230,22 @@ refreshGUI()
 -- ADD SIZE TEXT TO PART
 --====================================================
 local function addSizeText(block)
-	local gui = block:FindFirstChild("SizeText")
-	if not gui then
-		gui = Instance.new("SurfaceGui")
-		gui.Name = "SizeText"
-		gui.Adornee = block
-		gui.Face = Enum.NormalId.Top
-		gui.AlwaysOnTop = true
-		gui.CanvasSize = Vector2.new(200,50)
-		gui.Parent = block
+	if block:FindFirstChild("SizeText") then return end
+	local gui = Instance.new("SurfaceGui")
+	gui.Name = "SizeText"
+	gui.Adornee = block
+	gui.Face = Enum.NormalId.Top
+	gui.AlwaysOnTop = true
+	gui.CanvasSize = Vector2.new(200,50)
+	gui.Parent = block
 
-		local label = Instance.new("TextLabel")
-		label.Size = UDim2.new(1,0,1,0)
-		label.BackgroundTransparency = 1
-		label.TextColor3 = Color3.new(1,1,1)
-		label.TextScaled = true
-		label.Name = "Label"
-		label.Parent = gui
-	end
-	gui.Label.Text = sizeToKeyGUI(block.Size)
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1,0,1,0)
+	label.BackgroundTransparency = 1
+	label.TextColor3 = Color3.new(1,1,1)
+	label.TextScaled = true
+	label.Text = sizeToKeyGUI(block.Size)
+	label.Parent = gui
 end
 
 local function removeSizeText(block)
@@ -261,42 +271,27 @@ local function assignSlot(block,group)
 end
 
 --====================================================
--- WATCH BLOCKS CONTINUOUSLY
+-- PROCESS MODELS
 --====================================================
-local function watchBlock(model)
+local function processModel(model)
 	local block = model:FindFirstChild("Block_Color1")
 	if not block then return end
 
-	-- Identify blueprint group
-	local group
-	for _,g in pairs(blueprint) do
-		if model.Name == g.blockName then
-			group = g
-			break
-		end
-	end
-	if not group then return end
-
-	block.Color = group.blockColor
-
-	-- Loop to monitor size
-	task.spawn(function()
-		while block.Parent do
-			if block.Size == group.size then
+	for _,group in pairs(blueprint) do
+		if model.Name == group.blockName then
+			block.Color = group.blockColor
+			if sizeClose(block.Size, group.size) then
 				assignSlot(block,group)
-				break
 			else
 				addSizeText(block)
 			end
-			task.wait(0.1)
+			break
 		end
-	end)
+	end
 end
 
--- Initial
 for _,model in ipairs(furnitureFolder:GetChildren()) do
-	watchBlock(model)
+	processModel(model)
 end
 
--- New added
-furnitureFolder.ChildAdded:Connect(watchBlock)
+furnitureFolder.ChildAdded:Connect(processModel)
