@@ -28,16 +28,6 @@ local grass = plot.Terrain.Grass
 local furnitureFolder = plot.ActiveAssets.Furniture
 
 --====================================================
--- DEBUG FLASH
---====================================================
-task.spawn(function()
-	local original = grass.Color
-	grass.Color = Color3.new(1,1,0)
-	task.wait(1)
-	grass.Color = original
-end)
-
---====================================================
 -- MATERIAL → BB BLOCK MAP + COLOR
 --====================================================
 local materialMap = {
@@ -66,29 +56,24 @@ Ceiling|62.745598,63.303719,-42.002686|-0.000000,1.570796,0.000000|14.000000,2.2
 --====================================================
 -- SIZE HELPERS
 --====================================================
-local function sizesMatch(a,b)
-	local tol = 0.01 -- 1 cm tolerance
-	return math.abs(a.X-b.X)<=tol
-	   and math.abs(a.Y-b.Y)<=tol
-	   and math.abs(a.Z-b.Z)<=tol
+local function round1(num)
+	return math.floor(num*10 + 0.5)/10
 end
 
-local function sizeToKeyGUI(size)
-	local function round1(num)
-		return math.floor(num*10 + 0.5)/10
-	end
+local function sizeToKey(size)
 	return round1(size.X)..","..round1(size.Y)..","..round1(size.Z)
 end
 
-local function groupKey(size,material)
-	return size.X..","..size.Y..","..size.Z.."|"..material
-end
-
-local function positionsMatch(a,b)
+local function sizesMatch(a,b)
 	local tol = 0.01
 	return math.abs(a.X-b.X)<=tol
 	   and math.abs(a.Y-b.Y)<=tol
 	   and math.abs(a.Z-b.Z)<=tol
+end
+
+local function positionsMatch(a,b)
+	local tol = 0.01
+	return (a - b).magnitude <= tol
 end
 
 local function rotationsMatch(a,b)
@@ -104,7 +89,7 @@ end
 local blueprint = {}
 
 local function addSlot(size,pos,rot,material)
-	local key = groupKey(size,material)
+	local key = sizeToKey(size).."|"..material
 	blueprint[key] = blueprint[key] or {
 		size = size,
 		material = material,
@@ -166,6 +151,9 @@ local layout = Instance.new("UIListLayout")
 layout.Padding = UDim.new(0,4)
 layout.Parent = frame
 
+--====================================================
+-- REFRESH GUI
+--====================================================
 local function refreshGUI()
 	for _,child in ipairs(frame:GetChildren()) do
 		if child:IsA("TextLabel") and child ~= title then
@@ -184,24 +172,22 @@ local function refreshGUI()
 			label.BackgroundTransparency = 1
 			label.TextColor3 = group.blockColor
 			label.TextScaled = true
-			label.Text = group.colorName.." | "..sizeToKeyGUI(group.size).." x"..remaining
+			label.Text = group.colorName.." | "..sizeToKey(group.size).." x"..remaining
 			label.Parent = frame
 		end
 	end
 end
 
-refreshGUI()
-
 --====================================================
--- SIZE BILLBOARD
+-- BILLBOARD THAT UPDATES WITH SIZE
 --====================================================
 local function addSizeBillboard(block)
 	if block:FindFirstChild("SizeBillboard") then return end
 	local billboard = Instance.new("BillboardGui")
 	billboard.Name = "SizeBillboard"
 	billboard.Adornee = block
-	billboard.Size = UDim2.new(0,100,0,50)
-	billboard.StudsOffset = Vector3.new(0,block.Size.Y/2 + 0.5,0)
+	billboard.Size = UDim2.new(0,120,0,40)
+	billboard.StudsOffset = Vector3.new(0,block.Size.Y/2+0.5,0)
 	billboard.AlwaysOnTop = true
 	billboard.Parent = block
 
@@ -210,8 +196,13 @@ local function addSizeBillboard(block)
 	label.BackgroundTransparency = 1
 	label.TextColor3 = Color3.new(1,1,1)
 	label.TextScaled = true
-	label.Text = sizeToKeyGUI(block.Size)
+	label.Text = sizeToKey(block.Size)
 	label.Parent = billboard
+
+	-- Update text whenever size changes
+	block:GetPropertyChangedSignal("Size"):Connect(function()
+		label.Text = sizeToKey(block.Size)
+	end)
 end
 
 local function removeSizeBillboard(block)
@@ -223,7 +214,7 @@ end
 -- ASSIGN SLOT
 --====================================================
 local function assignSlot(block,group)
-	-- Skip if block is already green
+	-- Skip green blocks
 	if block.Color == Color3.fromRGB(0,255,0) then return end
 
 	for _,slot in ipairs(group.slots) do
@@ -232,9 +223,8 @@ local function assignSlot(block,group)
 			block.CFrame = cf
 			block.Anchored = true
 			slot.filled = true
-			removeSizeBillboard(block)
-			-- color green when placed correctly
 			block.Color = Color3.fromRGB(0,255,0)
+			removeSizeBillboard(block)
 			refreshGUI()
 			return
 		end
@@ -242,27 +232,17 @@ local function assignSlot(block,group)
 end
 
 --====================================================
--- WATCH BLOCK (NO AUTO ASSIGN)
---====================================================
-local function watchBlock(block,group)
-	if block.Color ~= Color3.fromRGB(0,255,0) then
-		addSizeBillboard(block)
-	end
-end
-
---====================================================
--- PROCESS MODELS
+-- PROCESS MODEL
 --====================================================
 local function processModel(model)
 	local block = model:FindFirstChild("Block_Color1")
 	if not block then return end
-
-	-- Skip already green
 	if block.Color == Color3.fromRGB(0,255,0) then return end
 
 	for _,group in pairs(blueprint) do
 		if model.Name == group.blockName then
 			block.Color = group.blockColor
+
 			-- Check if already in correct position
 			for _,slot in ipairs(group.slots) do
 				local targetCF = grass.CFrame * CFrame.new(slot.pos) * CFrame.fromEulerAnglesXYZ(slot.rot.X, slot.rot.Y, slot.rot.Z)
@@ -272,7 +252,9 @@ local function processModel(model)
 					break
 				end
 			end
-			watchBlock(block,group)
+
+			-- Billboard shows size and updates live
+			addSizeBillboard(block)
 			break
 		end
 	end
@@ -281,28 +263,24 @@ end
 for _,model in ipairs(furnitureFolder:GetChildren()) do
 	processModel(model)
 end
-
 furnitureFolder.ChildAdded:Connect(processModel)
 
 --====================================================
 -- CTRL KEYBIND FOR MANUAL SNAP
 --====================================================
 local UserInputService = game:GetService("UserInputService")
-
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
 	if input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
 		for _,model in ipairs(furnitureFolder:GetChildren()) do
 			local block = model:FindFirstChild("Block_Color1")
 			if not block then continue end
-			-- Skip green blocks
 			if block.Color == Color3.fromRGB(0,255,0) then continue end
 
 			for _,group in pairs(blueprint) do
 				for _,slot in ipairs(group.slots) do
 					if not slot.filled and sizesMatch(block.Size,group.size) then
 						assignSlot(block,group)
-						removeSizeBillboard(block)
 						break
 					end
 				end
