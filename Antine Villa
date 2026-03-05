@@ -84,6 +84,20 @@ local function groupKey(size,material)
 	return size.X..","..size.Y..","..size.Z.."|"..material
 end
 
+local function positionsMatch(a,b)
+	local tol = 0.01
+	return math.abs(a.X-b.X)<=tol
+	   and math.abs(a.Y-b.Y)<=tol
+	   and math.abs(a.Z-b.Z)<=tol
+end
+
+local function rotationsMatch(a,b)
+	local tol = 0.01
+	return math.abs(a.X-b.X)<=tol
+	   and math.abs(a.Y-b.Y)<=tol
+	   and math.abs(a.Z-b.Z)<=tol
+end
+
 --====================================================
 -- BLUEPRINT TABLE
 --====================================================
@@ -209,6 +223,9 @@ end
 -- ASSIGN SLOT
 --====================================================
 local function assignSlot(block,group)
+	-- Skip if block is already green
+	if block.Color == Color3.fromRGB(0,255,0) then return end
+
 	for _,slot in ipairs(group.slots) do
 		if not slot.filled and sizesMatch(block.Size,group.size) then
 			local cf = grass.CFrame * CFrame.new(slot.pos) * CFrame.fromEulerAnglesXYZ(slot.rot.X, slot.rot.Y, slot.rot.Z)
@@ -216,6 +233,8 @@ local function assignSlot(block,group)
 			block.Anchored = true
 			slot.filled = true
 			removeSizeBillboard(block)
+			-- color green when placed correctly
+			block.Color = Color3.fromRGB(0,255,0)
 			refreshGUI()
 			return
 		end
@@ -226,7 +245,9 @@ end
 -- WATCH BLOCK (NO AUTO ASSIGN)
 --====================================================
 local function watchBlock(block,group)
-	addSizeBillboard(block)
+	if block.Color ~= Color3.fromRGB(0,255,0) then
+		addSizeBillboard(block)
+	end
 end
 
 --====================================================
@@ -236,9 +257,21 @@ local function processModel(model)
 	local block = model:FindFirstChild("Block_Color1")
 	if not block then return end
 
+	-- Skip already green
+	if block.Color == Color3.fromRGB(0,255,0) then return end
+
 	for _,group in pairs(blueprint) do
 		if model.Name == group.blockName then
 			block.Color = group.blockColor
+			-- Check if already in correct position
+			for _,slot in ipairs(group.slots) do
+				local targetCF = grass.CFrame * CFrame.new(slot.pos) * CFrame.fromEulerAnglesXYZ(slot.rot.X, slot.rot.Y, slot.rot.Z)
+				if positionsMatch(block.Position,targetCF.Position) and rotationsMatch(block.Orientation,targetCF:ToOrientation()) then
+					slot.filled = true
+					block.Color = Color3.fromRGB(0,255,0)
+					break
+				end
+			end
 			watchBlock(block,group)
 			break
 		end
@@ -262,6 +295,8 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		for _,model in ipairs(furnitureFolder:GetChildren()) do
 			local block = model:FindFirstChild("Block_Color1")
 			if not block then continue end
+			-- Skip green blocks
+			if block.Color == Color3.fromRGB(0,255,0) then continue end
 
 			for _,group in pairs(blueprint) do
 				for _,slot in ipairs(group.slots) do
