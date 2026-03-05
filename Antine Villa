@@ -187,9 +187,6 @@ local layout = Instance.new("UIListLayout")
 layout.Padding = UDim.new(0,4)
 layout.Parent = frame
 
---====================================================
--- GUI UPDATE
---====================================================
 local function refreshGUI()
 	for _,child in ipairs(frame:GetChildren()) do
 		if child:IsA("TextLabel") and child ~= title then
@@ -220,22 +217,25 @@ refreshGUI()
 -- ADD SIZE TEXT TO PART
 --====================================================
 local function addSizeText(block)
-	if block:FindFirstChild("SizeText") then return end
-	local gui = Instance.new("SurfaceGui")
-	gui.Name = "SizeText"
-	gui.Adornee = block
-	gui.Face = Enum.NormalId.Top
-	gui.AlwaysOnTop = true
-	gui.CanvasSize = Vector2.new(200,50)
-	gui.Parent = block
+	local gui = block:FindFirstChild("SizeText")
+	if not gui then
+		gui = Instance.new("SurfaceGui")
+		gui.Name = "SizeText"
+		gui.Adornee = block
+		gui.Face = Enum.NormalId.Top
+		gui.AlwaysOnTop = true
+		gui.CanvasSize = Vector2.new(200,50)
+		gui.Parent = block
 
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.new(1,0,1,0)
-	label.BackgroundTransparency = 1
-	label.TextColor3 = Color3.new(1,1,1)
-	label.TextScaled = true
-	label.Text = sizeToKeyGUI(block.Size)
-	label.Parent = gui
+		local label = Instance.new("TextLabel")
+		label.Size = UDim2.new(1,0,1,0)
+		label.BackgroundTransparency = 1
+		label.TextColor3 = Color3.new(1,1,1)
+		label.TextScaled = true
+		label.Name = "Label"
+		label.Parent = gui
+	end
+	gui.Label.Text = sizeToKeyGUI(block.Size)
 end
 
 local function removeSizeText(block)
@@ -261,27 +261,42 @@ local function assignSlot(block,group)
 end
 
 --====================================================
--- PROCESS MODELS
+-- WATCH BLOCKS CONTINUOUSLY
 --====================================================
-local function processModel(model)
+local function watchBlock(model)
 	local block = model:FindFirstChild("Block_Color1")
 	if not block then return end
 
-	for _,group in pairs(blueprint) do
-		if model.Name == group.blockName then
-			block.Color = group.blockColor
-			if block.Size == group.size then
-				assignSlot(block,group)
-			else
-				addSizeText(block)
-			end
+	-- Identify blueprint group
+	local group
+	for _,g in pairs(blueprint) do
+		if model.Name == g.blockName then
+			group = g
 			break
 		end
 	end
+	if not group then return end
+
+	block.Color = group.blockColor
+
+	-- Loop to monitor size
+	task.spawn(function()
+		while block.Parent do
+			if block.Size == group.size then
+				assignSlot(block,group)
+				break
+			else
+				addSizeText(block)
+			end
+			task.wait(0.1)
+		end
+	end)
 end
 
+-- Initial
 for _,model in ipairs(furnitureFolder:GetChildren()) do
-	processModel(model)
+	watchBlock(model)
 end
 
-furnitureFolder.ChildAdded:Connect(processModel)
+-- New added
+furnitureFolder.ChildAdded:Connect(watchBlock)
