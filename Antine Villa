@@ -223,20 +223,10 @@ local function assignSlot(block,group)
 end
 
 --====================================================
--- WATCH BLOCK
+-- WATCH BLOCK (NO AUTO ASSIGN)
 --====================================================
 local function watchBlock(block,group)
-	local conn
-	local function check()
-		if sizesMatch(block.Size,group.size) then
-			assignSlot(block,group)
-			if conn then conn:Disconnect() end
-		else
-			addSizeBillboard(block)
-		end
-	end
-	conn = block:GetPropertyChangedSignal("Size"):Connect(check)
-	check()
+	addSizeBillboard(block)
 end
 
 --====================================================
@@ -260,3 +250,28 @@ for _,model in ipairs(furnitureFolder:GetChildren()) do
 end
 
 furnitureFolder.ChildAdded:Connect(processModel)
+
+--====================================================
+-- CTRL KEYBIND FOR MANUAL SNAP
+--====================================================
+local UserInputService = game:GetService("UserInputService")
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
+		for _,model in ipairs(furnitureFolder:GetChildren()) do
+			local block = model:FindFirstChild("Block_Color1")
+			if not block then continue end
+
+			for _,group in pairs(blueprint) do
+				for _,slot in ipairs(group.slots) do
+					if not slot.filled and sizesMatch(block.Size,group.size) then
+						assignSlot(block,group)
+						removeSizeBillboard(block)
+						break
+					end
+				end
+			end
+		end
+	end
+end)
