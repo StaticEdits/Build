@@ -1,375 +1,287 @@
 --====================================================
 -- PLAYER
 --====================================================
-
 local player = game.Players.LocalPlayer
 
 --====================================================
 -- FIND PLAYER PLOT
 --====================================================
-
 local plotsFolder = workspace.Property.Plots
 local plot
 
-for _,obj in ipairs(plotsFolder:GetDescendants()) do
-	if obj:IsA("StringValue") and obj.Name == "Owner" then
-		if obj.Value == player.Name then
-			plot = obj.Parent
-			break
-		end
+for _,v in ipairs(plotsFolder:GetDescendants()) do
+	if v:IsA("StringValue") and v.Name == "Owner" and v.Value == player.Name then
+		plot = v.Parent
+		break
 	end
 end
 
 if not plot then
-	warn("Plot not found")
+	warn("Player plot not found")
 	return
 end
 
-local grass = plot.Empty.Terrain.Grass
+--====================================================
+-- REFERENCES
+--====================================================
+local grass = plot.Terrain.Grass
 local furnitureFolder = plot.ActiveAssets.Furniture
 
 --====================================================
 -- DEBUG FLASH
 --====================================================
-
 task.spawn(function()
-
 	local original = grass.Color
-
 	grass.Color = Color3.new(1,1,0)
 	task.wait(1)
 	grass.Color = original
-
 end)
 
 --====================================================
--- PASTE BLUEPRINT HERE
+-- MATERIAL → BB BLOCK MAP + COLOR
 --====================================================
-
-local blueprintData = [[Ceiling|62.745598,63.303719,-42.002686|-0.000000,1.570796,0.000000|14.000000,2.200000,12.300000|SmoothPlastic]]
-
---====================================================
--- MATERIAL → BLOCK TYPE
---====================================================
-
 local materialMap = {
-
-	Grass = "BB_Grass Building Block",
-
-	Concrete = "BB_Building Block_Medium stone grey",
-	Slate = "BB_Building Block_Medium stone grey",
-
-	Wood = "BB_Building Block_Dirt brown",
-	WoodPlanks = "BB_Building Block_Dirt brown",
-
-	Granite = "BB_Building Block_Dark stone grey",
-	Rock = "BB_Building Block_Dark stone grey",
-
-	SmoothPlastic = "BB_Building Block_White",
-	Plastic = "BB_Building Block_White",
-
-	Metal = "BB_Building Block_Black",
-	DiamondPlate = "BB_Building Block_Black"
-
+	Grass = {name="BB_Grass Building Block", color=Color3.fromRGB(0,255,0), colorName="Green"},
+	Concrete = {name="BB_Building Block_Medium stone grey", color=Color3.fromRGB(128,128,128), colorName="Gray"},
+	Slate = {name="BB_Building Block_Medium stone grey", color=Color3.fromRGB(128,128,128), colorName="Gray"},
+	Wood = {name="BB_Building Block_Dirt brown", color=Color3.fromRGB(165,42,42), colorName="Brown"},
+	WoodPlanks = {name="BB_Building Block_Dirt brown", color=Color3.fromRGB(165,42,42), colorName="Brown"},
+	Granite = {name="BB_Building Block_Dark stone grey", color=Color3.fromRGB(64,64,64), colorName="DarkGray"},
+	SmoothPlastic = {name="BB_Building Block_White", color=Color3.fromRGB(255,192,203), colorName="Pink"},
+	Plastic = {name="BB_Building Block_White", color=Color3.fromRGB(255,192,203), colorName="Pink"},
+	Metal = {name="BB_Building Block_Black", color=Color3.fromRGB(0,0,0), colorName="Black"}
 }
 
-local function getBlockType(material)
+local function getBlock(material)
+	return materialMap[material] or {name="BB_Building Block_White", color=Color3.fromRGB(255,192,203), colorName="Pink"}
+end
 
-	if materialMap[material] then
-		return materialMap[material]
+--====================================================
+-- BLUEPRINT STRING (EXAMPLE)
+--====================================================
+local blueprintData = [[
+Ceiling|62.745598,63.303719,-42.002686|-0.000000,1.570796,0.000000|14.000000,2.200000,12.300000|SmoothPlastic
+]]
+
+--====================================================
+-- SIZE HELPERS
+--====================================================
+local function sizeToKeyExact(size)
+	return size.X..","..size.Y..","..size.Z
+end
+
+local function sizeToKeyGUI(size)
+	local function round1(num)
+		return math.floor(num*10 + 0.5)/10
 	end
+	return round1(size.X)..","..round1(size.Y)..","..round1(size.Z)
+end
 
-	return "BB_Building Block_White"
-
+local function groupKey(size,material)
+	return sizeToKeyExact(size).."|"..material
 end
 
 --====================================================
--- BLUEPRINT STRUCTURE
+-- BLUEPRINT TABLE
 --====================================================
-
 local blueprint = {}
-local totalRemaining = 0
-
-local function sizeKey(v)
-
-	return math.floor(v.X+0.5)..","..
-		   math.floor(v.Y+0.5)..","..
-		   math.floor(v.Z+0.5)
-
-end
-
-local function groupKey(size, block)
-
-	return sizeKey(size).."|"..block
-
-end
 
 local function addSlot(size,pos,rot,material)
-
-	local blockType = getBlockType(material)
-
-	local key = groupKey(size,blockType)
-
-	if not blueprint[key] then
-		blueprint[key] = {
-
-			size = size,
-			blockType = blockType,
-			slots = {}
-
-		}
-	end
-
+	local key = groupKey(size,material)
+	blueprint[key] = blueprint[key] or {
+		size = size,
+		material = material,
+		blockName = getBlock(material).name,
+		blockColor = getBlock(material).color,
+		colorName = getBlock(material).colorName,
+		slots = {}
+	}
 	table.insert(blueprint[key].slots,{
-
 		pos = pos,
 		rot = rot,
 		filled = false
-
 	})
-
-	totalRemaining += 1
-
 end
 
 --====================================================
 -- PARSE BLUEPRINT
 --====================================================
-
 for line in blueprintData:gmatch("[^;]+") do
-
-	local part,posStr,rotStr,sizeStr,matStr = line:match("([^|]+)|([^|]+)|([^|]+)|([^|]+)|([^|]+)")
-
-	if part then
-
+	local part,posStr,rotStr,sizeStr,matStr =
+		line:match("([^|]+)|([^|]+)|([^|]+)|([^|]+)|?(.*)")
+	if part and posStr and rotStr and sizeStr then
 		local px,py,pz = posStr:match("([^,]+),([^,]+),([^,]+)")
 		local rx,ry,rz = rotStr:match("([^,]+),([^,]+),([^,]+)")
 		local sx,sy,sz = sizeStr:match("([^,]+),([^,]+),([^,]+)")
 
-		local pos = Vector3.new(px,py,pz)
-		local rot = Vector3.new(rx,ry,rz)
-		local size = Vector3.new(sx,sy,sz)
+		local pos = Vector3.new(tonumber(px),tonumber(py),tonumber(pz))
+		local rot = Vector3.new(tonumber(rx),tonumber(ry),tonumber(rz))
+		local size = Vector3.new(tonumber(sx),tonumber(sy),tonumber(sz))
+
+		if not matStr or matStr == "" then matStr = "SmoothPlastic" end
 
 		addSlot(size,pos,rot,matStr)
-
 	end
-
 end
 
 --====================================================
 -- CRASH RECOVERY
 --====================================================
-
 local function vecClose(a,b,t)
-
 	return math.abs(a.X-b.X)<=t
-	and math.abs(a.Y-b.Y)<=t
-	and math.abs(a.Z-b.Z)<=t
-
+	   and math.abs(a.Y-b.Y)<=t
+	   and math.abs(a.Z-b.Z)<=t
 end
 
-local POSITION_TOL = 0.05
-local ROT_TOL = 0.02
-
-local function recover()
-
+local function recoverExisting()
 	for _,model in ipairs(furnitureFolder:GetChildren()) do
-
 		if not model.Name:find("BB_") then continue end
-
 		local block = model:FindFirstChild("Block_Color1")
 		if not block then continue end
 
-		local rel = grass.CFrame:ToObjectSpace(block.CFrame)
-
-		local pos = rel.Position
-		local rx,ry,rz = rel:ToOrientation()
-
+		local relative = grass.CFrame:ToObjectSpace(block.CFrame)
+		local pos = relative.Position
+		local rx,ry,rz = relative:ToOrientation()
 		local rot = Vector3.new(rx,ry,rz)
-
 		local size = block.Size
 
-		local key = groupKey(size,model.Name)
+		for _,group in pairs(blueprint) do
+			if group.blockName ~= model.Name then continue end
+			if sizeToKeyExact(group.size) ~= sizeToKeyExact(size) then continue end
 
-		local group = blueprint[key]
-
-		if not group then continue end
-
-		for _,slot in ipairs(group.slots) do
-
-			if slot.filled then continue end
-
-			if vecClose(slot.pos,pos,POSITION_TOL)
-			and vecClose(slot.rot,rot,ROT_TOL) then
-
-				slot.filled = true
-				totalRemaining -= 1
-				break
-
+			for _,slot in ipairs(group.slots) do
+				if slot.filled then continue end
+				if vecClose(pos,slot.pos,0.05) and vecClose(rot,slot.rot,0.02) then
+					slot.filled = true
+					break
+				end
 			end
-
 		end
-
 	end
-
 end
 
-recover()
+recoverExisting()
 
 --====================================================
--- GUI
+-- GUI SETUP
 --====================================================
-
 local gui = Instance.new("ScreenGui")
 gui.Name = "BlueprintTracker"
 gui.Parent = player.PlayerGui
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0,300,0,200)
-frame.Position = UDim2.new(0,20,0,200)
+frame.Size = UDim2.new(0,260,0,400)
+frame.Position = UDim2.new(0,20,0,100)
 frame.BackgroundColor3 = Color3.fromRGB(25,25,25)
 frame.Parent = gui
 
-local totalLabel = Instance.new("TextLabel")
-totalLabel.Size = UDim2.new(1,0,0,30)
-totalLabel.BackgroundTransparency = 1
-totalLabel.TextColor3 = Color3.new(1,1,1)
-totalLabel.TextScaled = true
-totalLabel.Parent = frame
-
-local container = Instance.new("Frame")
-container.Size = UDim2.new(1,0,1,-30)
-container.Position = UDim2.new(0,0,0,30)
-container.BackgroundTransparency = 1
-container.Parent = frame
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1,0,0,30)
+title.BackgroundTransparency = 1
+title.Text = "Parts Needed"
+title.TextColor3 = Color3.new(1,1,1)
+title.TextScaled = true
+title.Parent = frame
 
 local layout = Instance.new("UIListLayout")
-layout.Parent = container
-
---====================================================
--- COUNT REMAINING
---====================================================
-
-local function getCounts()
-
-	local counts = {}
-
-	for _,group in pairs(blueprint) do
-
-		local remaining = 0
-
-		for _,slot in ipairs(group.slots) do
-			if not slot.filled then
-				remaining += 1
-			end
-		end
-
-		if remaining > 0 then
-
-			local key = group.blockType.." "..sizeKey(group.size)
-
-			counts[key] = remaining
-
-		end
-
-	end
-
-	return counts
-
-end
+layout.Padding = UDim.new(0,4)
+layout.Parent = frame
 
 --====================================================
 -- GUI UPDATE
 --====================================================
-
-local function refresh()
-
-	for _,c in ipairs(container:GetChildren()) do
-		if c:IsA("TextLabel") then
-			c:Destroy()
+local function refreshGUI()
+	for _,child in ipairs(frame:GetChildren()) do
+		if child:IsA("TextLabel") and child ~= title then
+			child:Destroy()
 		end
 	end
 
-	totalLabel.Text = totalRemaining.." parts remaining"
-
-	local counts = getCounts()
-
-	local shown = 0
-
-	for key,count in pairs(counts) do
-
-		if shown >= 5 then break end
-
-		local label = Instance.new("TextLabel")
-		label.Size = UDim2.new(1,0,0,25)
-		label.BackgroundTransparency = 1
-		label.TextColor3 = Color3.new(1,1,1)
-		label.TextScaled = true
-		label.Text = key.." x"..count
-		label.Parent = container
-
-		shown += 1
-
+	for _,group in pairs(blueprint) do
+		local remaining = 0
+		for _,slot in ipairs(group.slots) do
+			if not slot.filled then remaining += 1 end
+		end
+		if remaining > 0 then
+			local label = Instance.new("TextLabel")
+			label.Size = UDim2.new(1,0,0,25)
+			label.BackgroundTransparency = 1
+			label.TextColor3 = group.blockColor
+			label.TextScaled = true
+			label.Text = group.colorName.." | "..sizeToKeyGUI(group.size).." x"..remaining
+			label.Parent = frame
+		end
 	end
+end
 
+refreshGUI()
+
+--====================================================
+-- ADD SIZE TEXT TO PART
+--====================================================
+local function addSizeText(block)
+	if block:FindFirstChild("SizeText") then return end
+	local gui = Instance.new("SurfaceGui")
+	gui.Name = "SizeText"
+	gui.Adornee = block
+	gui.Face = Enum.NormalId.Top
+	gui.AlwaysOnTop = true
+	gui.CanvasSize = Vector2.new(200,50)
+	gui.Parent = block
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1,0,1,0)
+	label.BackgroundTransparency = 1
+	label.TextColor3 = Color3.new(1,1,1)
+	label.TextScaled = true
+	label.Text = sizeToKeyGUI(block.Size)
+	label.Parent = gui
+end
+
+local function removeSizeText(block)
+	local gui = block:FindFirstChild("SizeText")
+	if gui then gui:Destroy() end
 end
 
 --====================================================
 -- SLOT ASSIGNMENT
 --====================================================
-
-local function assign(block,modelName)
-
-	local key = groupKey(block.Size,modelName)
-
-	local group = blueprint[key]
-
-	if not group then return end
-
+local function assignSlot(block,group)
 	for _,slot in ipairs(group.slots) do
-
 		if not slot.filled then
-
-			local cf =
-				CFrame.new(slot.pos) *
-				CFrame.Angles(slot.rot.X,slot.rot.Y,slot.rot.Z)
-
-			block.CFrame = grass.CFrame * cf
+			local relativeCF = CFrame.new(slot.pos) * CFrame.Angles(slot.rot.X,slot.rot.Y,slot.rot.Z)
+			block.CFrame = grass.CFrame * relativeCF
 			block.Anchored = true
-
 			slot.filled = true
-			totalRemaining -= 1
-
-			refresh()
-
+			removeSizeText(block)
+			refreshGUI()
 			return
-
 		end
-
 	end
-
 end
 
 --====================================================
--- MODEL PROCESSING
+-- PROCESS MODELS
 --====================================================
-
-local function process(model)
-
-	if not model.Name:find("BB_") then return end
-
-	local block = model:WaitForChild("Block_Color1",5)
-
+local function processModel(model)
+	local block = model:FindFirstChild("Block_Color1")
 	if not block then return end
 
-	assign(block,model.Name)
-
+	for _,group in pairs(blueprint) do
+		if model.Name == group.blockName then
+			block.Color = group.blockColor
+			if block.Size == group.size then
+				assignSlot(block,group)
+			else
+				addSizeText(block)
+			end
+			break
+		end
+	end
 end
 
-for _,m in ipairs(furnitureFolder:GetChildren()) do
-	process(m)
+for _,model in ipairs(furnitureFolder:GetChildren()) do
+	processModel(model)
 end
 
-furnitureFolder.ChildAdded:Connect(process)
-
-refresh()
+furnitureFolder.ChildAdded:Connect(processModel)
