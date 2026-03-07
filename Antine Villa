@@ -1,56 +1,9 @@
+```lua
 local player = game.Players.LocalPlayer
+local RS = game:GetService("ReplicatedStorage")
 
 --------------------------------------------------
--- Detect Plot
---------------------------------------------------
-
-local Plot
-for _, plot in ipairs(workspace.Property.Plots:GetChildren()) do
-	local owner = plot:FindFirstChild("Owner", true)
-	if owner and owner.Value == player.Name then
-		Plot = plot:FindFirstChild("Empty", true) or plot
-		break
-	end
-end
-
-if not Plot then
-	warn("Plot not found")
-	return
-end
-
-local GrassCF = Plot.Terrain.Grass.CFrame
-local Furniture = Plot.ActiveAssets.Furniture
-
---------------------------------------------------
--- GUI
---------------------------------------------------
-
-local gui = Instance.new("ScreenGui")
-gui.Parent = player.PlayerGui
-
-local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0,260,0,90)
-frame.Position = UDim2.new(0.5,-130,0.1,0)
-frame.BackgroundColor3 = Color3.fromRGB(30,30,30)
-frame.Parent = gui
-
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1,0,0,30)
-title.Text = "Blueprint Builder"
-title.TextColor3 = Color3.new(1,1,1)
-title.BackgroundTransparency = 1
-title.Parent = frame
-
-local progress = Instance.new("TextLabel")
-progress.Size = UDim2.new(1,0,0,30)
-progress.Position = UDim2.new(0,0,0,30)
-progress.Text = "Preparing..."
-progress.TextColor3 = Color3.new(1,1,1)
-progress.BackgroundTransparency = 1
-progress.Parent = frame
-
---------------------------------------------------
--- Blueprint
+-- BLUEPRINT
 --------------------------------------------------
 
 local Blueprint = [[
@@ -58,189 +11,287 @@ BB_Building Block_Black,-75,2.6999998092651367,77,1,0,0,0,1,0,0,0,1,16,1,16;BB_B
 ]]
 
 --------------------------------------------------
--- Remotes
+-- BLOCK TYPE MAP
 --------------------------------------------------
 
-local ChangeSizeRemote = game.ReplicatedStorage.Relays.House.ChangeFurnitureSize
-local PlaceFurnitureRemote = game.ReplicatedStorage.Relays.House.PlaceFurniture
+local BlockTypes = {
 
---------------------------------------------------
--- Block Spawn Info
---------------------------------------------------
+["BB_Building Block_White"] = {Id=355,Color="White"},
+["BB_Building Block_Medium stone grey"] = {Id=355,Color="Medium stone grey"},
+["BB_Building Block_Dirt brown"] = {Id=355,Color="Dirt brown"},
+["BB_Building Block_Dark stone grey"] = {Id=355,Color="Dark stone grey"},
+["BB_Building Block_Black"] = {Id=355,Color="Black"},
 
-local SpawnInfo = {
-	["BB_Building Block_White"] = {Id = 355, Color = "White"},
-	["BB_Building Block_Black"] = {Id = 355, Color = "Black"},
-	["BB_Building Block_Dark stone grey"] = {Id = 355, Color = "Dark stone grey"},
-	["BB_Building Block_Dirt brown"] = {Id = 355, Color = "Dirt brown"},
-	["BB_Building Block_Medium stone grey"] = {Id = 355, Color = "Medium stone grey"},
-	["BB_Grass Building Block"] = {Id = 1167, Color = "Black"},
-	["BB_Glass Pane"] = {Id = 959, Color = "White"}
+["BB_Grass Building Block"] = {Id=1167,Color="Black"},
+["BB_Glass Pane"] = {Id=959,Color="White"}
+
 }
 
 --------------------------------------------------
--- Parse Blueprint
+-- FIND PLAYER HOUSE
 --------------------------------------------------
 
-local queue = {}
+local function GetHousePath()
 
-for entry in string.gmatch(Blueprint,"[^;]+") do
+	for _,plot in ipairs(workspace.Property.Plots:GetChildren()) do
 
-	local data = string.split(entry,",")
+		local owner = plot:FindFirstChild("Owner",true)
 
-	local name = data[1]
-	local spawn = SpawnInfo[name]
+		if owner and owner:IsA("StringValue") and owner.Value == player.Name then
+			return plot
+		end
 
-	if spawn then
+	end
 
-		local px = tonumber(data[2])
-		local py = tonumber(data[3])
-		local pz = tonumber(data[4])
+end
 
-		local r00 = tonumber(data[5])
-		local r01 = tonumber(data[6])
-		local r02 = tonumber(data[7])
+local House = GetHousePath()
+local Plot = House.Empty
+local GrassCF = Plot.Terrain.Grass.CFrame
 
-		local r10 = tonumber(data[8])
-		local r11 = tonumber(data[9])
-		local r12 = tonumber(data[10])
+--------------------------------------------------
+-- REMOTES
+--------------------------------------------------
 
-		local r20 = tonumber(data[11])
-		local r21 = tonumber(data[12])
-		local r22 = tonumber(data[13])
+local PlaceFurniture = RS:WaitForChild("Relays"):WaitForChild("House"):WaitForChild("PlaceFurniture")
+local ChangeSize = RS:WaitForChild("Relays"):WaitForChild("House"):WaitForChild("ChangeFurnitureSize")
 
-		local sx = tonumber(data[14])
-		local sy = tonumber(data[15])
-		local sz = tonumber(data[16])
+--------------------------------------------------
+-- GUI
+--------------------------------------------------
 
-		local relCF = CFrame.fromMatrix(
-			Vector3.new(px,py,pz),
-			Vector3.new(r00,r10,r20),
-			Vector3.new(r01,r11,r21),
-			Vector3.new(r02,r12,r22)
-		)
+local function CreateProgressGui(total)
 
-		local worldCF = GrassCF * relCF
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "BlueprintPrinter"
+	gui.ResetOnSpawn = false
+	gui.Parent = player.PlayerGui
 
-		table.insert(queue,{
-			name = name,
-			spawn = spawn,
-			relCF = relCF,
-			worldCF = worldCF,
-			size = Vector3.new(sx,sy,sz)
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.new(0,200,0,50)
+	frame.Position = UDim2.new(0.5,-100,0,50)
+	frame.BackgroundColor3 = Color3.fromRGB(25,25,25)
+	frame.BorderSizePixel = 0
+	frame.Parent = gui
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1,0,1,0)
+	label.BackgroundTransparency = 1
+	label.TextColor3 = Color3.new(1,1,1)
+	label.TextScaled = true
+	label.Font = Enum.Font.SourceSansBold
+	label.Text = "0 / "..total
+	label.Parent = frame
+
+	return gui,label
+
+end
+
+local function UpdateProgress(label,current,total)
+
+	label.Text = current.." / "..total
+
+end
+
+local function RemoveGui(gui)
+
+	task.wait(1)
+
+	gui:Destroy()
+
+end
+
+--------------------------------------------------
+-- PARSE BLUEPRINT
+--------------------------------------------------
+
+local function ParseBlueprint(str)
+
+	local parts = {}
+
+	for line in string.gmatch(str,"[^;]+") do
+
+		local values = string.split(line,",")
+
+		local type = values[1]
+
+		local cf = {
+			tonumber(values[2]),
+			tonumber(values[3]),
+			tonumber(values[4]),
+			tonumber(values[5]),
+			tonumber(values[6]),
+			tonumber(values[7]),
+			tonumber(values[8]),
+			tonumber(values[9]),
+			tonumber(values[10]),
+			tonumber(values[11]),
+			tonumber(values[12]),
+			tonumber(values[13])
+		}
+
+		local size = {
+			tonumber(values[14]),
+			tonumber(values[15]),
+			tonumber(values[16])
+		}
+
+		table.insert(parts,{
+			type = type,
+			cf = cf,
+			size = size
 		})
 
 	end
+
+	return parts
+
 end
 
-local total = #queue
-progress.Text = "Blocks: "..total
-
 --------------------------------------------------
--- Serial helper
+-- DECODE CFRAME
 --------------------------------------------------
 
-local function getSerial(model)
+local function DecodeCF(t)
+
+	return CFrame.new(
+		t[1],t[2],t[3],
+		t[4],t[5],t[6],
+		t[7],t[8],t[9],
+		t[10],t[11],t[12]
+	)
+
+end
+
+--------------------------------------------------
+-- SORT PARTS (LAYER BUILD)
+--------------------------------------------------
+
+local function SortParts(parts)
+
+	table.sort(parts,function(a,b)
+
+		local ay = a.cf[2]
+		local by = b.cf[2]
+
+		if ay ~= by then
+			return ay < by
+		end
+
+		local ax = a.cf[1]
+		local bx = b.cf[1]
+
+		if ax ~= bx then
+			return ax < bx
+		end
+
+		return a.cf[3] < b.cf[3]
+
+	end)
+
+end
+
+--------------------------------------------------
+-- SPAWN BLOCK
+--------------------------------------------------
+
+local function SpawnBlock(typeKey,relCF,worldCF)
+
+	local info = BlockTypes[typeKey]
+
+	local args = {
+		{
+			relCF,
+			Attach = "Bottom",
+			worldCF,
+			info.Color,
+			info.Id,
+			PurchaseForPlace = true,
+			House
+		},
+		worldCF
+	}
+
+	local model = PlaceFurniture:InvokeServer(unpack(args))
+
 	local serial = model:GetAttribute("SerialId")
-	if not serial then return nil end
-	return tostring(serial):match("(%d+)$")
+
+	return serial
+
 end
 
 --------------------------------------------------
--- Track used blocks
+-- RESIZE BLOCK
 --------------------------------------------------
 
-local usedSerials = {}
+local function ResizeBlock(serial,size,worldCF)
 
---------------------------------------------------
--- Find existing block
---------------------------------------------------
+	local args = {
+		serial,
+		House,
+		Vector3.new(size[1],size[2],size[3]),
+		worldCF
+	}
 
-local function findExisting(name)
+	ChangeSize:InvokeServer(unpack(args))
 
-	for _,model in ipairs(Furniture:GetChildren()) do
-		if model.Name == name then
-
-			local serial = getSerial(model)
-
-			if serial and not usedSerials[serial] then
-				local part = model:FindFirstChildWhichIsA("BasePart")
-
-				if part then
-					usedSerials[serial] = true
-					return model, part, serial
-				end
-			end
-		end
-	end
-
-	return nil,nil,nil
 end
 
 --------------------------------------------------
--- Builder
+-- FINALIZE BLOCK
 --------------------------------------------------
 
-local built = 0
+local function FinalizeBlock(serial,size,worldCF)
 
-for _,job in ipairs(queue) do
+	local tempCF = worldCF + Vector3.new(0,0.05,0)
 
-	local model, part, serial = findExisting(job.name)
+	ResizeBlock(serial,size,tempCF)
 
-	--------------------------------------------------
-	-- Spawn if needed
-	--------------------------------------------------
+	task.wait()
 
-	if not model then
+	ResizeBlock(serial,size,worldCF)
 
-		local args = {
-			{
-				RelativeCFrame = job.relCF,
-				WorldCFrame = job.worldCF,
-				Color = job.spawn.Color,
-				Id = job.spawn.Id,
-				PurchaseForPlace = true,
-				House = Plot
-			},
-			job.relCF
-		}
+end
 
-		model = PlaceFurnitureRemote:InvokeServer(unpack(args))
+--------------------------------------------------
+-- BUILD
+--------------------------------------------------
 
-		if model then
+local function Build()
 
-			local timeout = tick() + 5
+	local parts = ParseBlueprint(Blueprint)
 
-			repeat
-				task.wait(0.05)
-				serial = getSerial(model)
-			until serial or tick() > timeout
+	local total = #parts
 
+	SortParts(parts)
+
+	local gui,label = CreateProgressGui(total)
+
+	for i,part in ipairs(parts) do
+
+		local relCF = DecodeCF(part.cf)
+
+		local worldCF = GrassCF * relCF
+
+		local serial = SpawnBlock(part.type,relCF,worldCF)
+
+		FinalizeBlock(serial,part.size,worldCF)
+
+		UpdateProgress(label,i,total)
+
+		if i % 20 == 0 then
+			task.wait()
 		end
 
 	end
 
-	--------------------------------------------------
-	-- Resize / position
-	--------------------------------------------------
-
-	if serial then
-
-		task.wait(0.05)
-
-		pcall(function()
-			ChangeSizeRemote:InvokeServer(serial,Plot,job.size,job.worldCF)
-		end)
-
-	end
-
-	built += 1
-	progress.Text = built.." / "..total
-
-	task.wait(0.08)
+	RemoveGui(gui)
 
 end
 
-progress.Text = "Build Complete"
+--------------------------------------------------
+-- START
+--------------------------------------------------
 
-print("Blueprint Build Complete")
+Build()
+```
