@@ -1,4 +1,4 @@
-```lua
+
 local player = game.Players.LocalPlayer
 local RS = game:GetService("ReplicatedStorage")
 
@@ -294,4 +294,3 @@ end
 --------------------------------------------------
 
 Build()
-```
