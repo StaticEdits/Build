@@ -18,8 +18,7 @@ if not Plot then
 	return
 end
 
-local Grass = Plot.Terrain.Grass
-local GrassCF = Grass.CFrame
+local GrassCF = Plot.Terrain.Grass.CFrame
 local Furniture = Plot.ActiveAssets.Furniture
 
 --------------------------------------------------
@@ -30,16 +29,24 @@ local gui = Instance.new("ScreenGui")
 gui.Parent = player.PlayerGui
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0,260,0,80)
+frame.Size = UDim2.new(0,260,0,90)
 frame.Position = UDim2.new(0.5,-130,0.1,0)
 frame.BackgroundColor3 = Color3.fromRGB(30,30,30)
 frame.Parent = gui
 
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1,0,0,30)
+title.Text = "Blueprint Builder"
+title.TextColor3 = Color3.new(1,1,1)
+title.BackgroundTransparency = 1
+title.Parent = frame
+
 local progress = Instance.new("TextLabel")
-progress.Size = UDim2.new(1,0,1,0)
+progress.Size = UDim2.new(1,0,0,30)
+progress.Position = UDim2.new(0,0,0,30)
+progress.Text = "Preparing..."
 progress.TextColor3 = Color3.new(1,1,1)
 progress.BackgroundTransparency = 1
-progress.Text = "Preparing..."
 progress.Parent = frame
 
 --------------------------------------------------
@@ -51,38 +58,28 @@ BB_Building Block_Black,-75,2.6999998092651367,77,1,0,0,0,1,0,0,0,1,16,1,16;BB_B
 ]]
 
 --------------------------------------------------
--- Remotes (ORIGINAL)
+-- Remotes
 --------------------------------------------------
 
 local ChangeSizeRemote = game.ReplicatedStorage.Relays.House.ChangeFurnitureSize
 local PlaceFurnitureRemote = game.ReplicatedStorage.Relays.House.PlaceFurniture
 
 --------------------------------------------------
--- Block spawn info
+-- Block Spawn Info
 --------------------------------------------------
 
 local SpawnInfo = {
-	["BB_Building Block_White"] = {Id=355,Color="White"},
-	["BB_Building Block_Black"] = {Id=355,Color="Black"},
-	["BB_Building Block_Dark stone grey"] = {Id=355,Color="Dark stone grey"},
-	["BB_Building Block_Dirt brown"] = {Id=355,Color="Dirt brown"},
-	["BB_Building Block_Medium stone grey"] = {Id=355,Color="Medium stone grey"},
-	["BB_Glass Pane"] = {Id=959,Color="White"},
-	["BB_Grass Building Block"] = {Id=1167,Color="Black"}
+	["BB_Building Block_White"] = {Id = 355, Color = "White"},
+	["BB_Building Block_Black"] = {Id = 355, Color = "Black"},
+	["BB_Building Block_Dark stone grey"] = {Id = 355, Color = "Dark stone grey"},
+	["BB_Building Block_Dirt brown"] = {Id = 355, Color = "Dirt brown"},
+	["BB_Building Block_Medium stone grey"] = {Id = 355, Color = "Medium stone grey"},
+	["BB_Grass Building Block"] = {Id = 1167, Color = "Black"},
+	["BB_Glass Pane"] = {Id = 959, Color = "White"}
 }
 
 --------------------------------------------------
--- SerialID helper
---------------------------------------------------
-
-local function getSerial(model)
-	local serial = model:GetAttribute("SerialId")
-	if not serial then return nil end
-	return tostring(serial):match("(%d+)$")
-end
-
---------------------------------------------------
--- Build queue
+-- Parse Blueprint
 --------------------------------------------------
 
 local queue = {}
@@ -126,11 +123,11 @@ for entry in string.gmatch(Blueprint,"[^;]+") do
 		local worldCF = GrassCF * relCF
 
 		table.insert(queue,{
-			name=name,
-			spawn=spawn,
-			relCF=relCF,
-			worldCF=worldCF,
-			size=Vector3.new(sx,sy,sz)
+			name = name,
+			spawn = spawn,
+			relCF = relCF,
+			worldCF = worldCF,
+			size = Vector3.new(sx,sy,sz)
 		})
 
 	end
@@ -138,6 +135,16 @@ end
 
 local total = #queue
 progress.Text = "Blocks: "..total
+
+--------------------------------------------------
+-- Serial helper
+--------------------------------------------------
+
+local function getSerial(model)
+	local serial = model:GetAttribute("SerialId")
+	if not serial then return nil end
+	return tostring(serial):match("(%d+)$")
+end
 
 --------------------------------------------------
 -- Track used blocks
@@ -151,27 +158,23 @@ local usedSerials = {}
 
 local function findExisting(name)
 
-	for _,model in ipairs(Furniture:GetDescendants()) do
-
+	for _,model in ipairs(Furniture:GetChildren()) do
 		if model.Name == name then
 
 			local serial = getSerial(model)
 
 			if serial and not usedSerials[serial] then
-
 				local part = model:FindFirstChildWhichIsA("BasePart")
 
 				if part then
 					usedSerials[serial] = true
-					return model,part,serial
+					return model, part, serial
 				end
-
 			end
-
 		end
-
 	end
 
+	return nil,nil,nil
 end
 
 --------------------------------------------------
@@ -182,9 +185,12 @@ local built = 0
 
 for _,job in ipairs(queue) do
 
-	local model,part,serial = findExisting(job.name)
+	local model, part, serial = findExisting(job.name)
 
-	-- spawn if none available
+	--------------------------------------------------
+	-- Spawn if needed
+	--------------------------------------------------
+
 	if not model then
 
 		local args = {
@@ -201,25 +207,40 @@ for _,job in ipairs(queue) do
 
 		model = PlaceFurnitureRemote:InvokeServer(unpack(args))
 
-		task.wait(0.08)
-
 		if model then
-			part = model:FindFirstChildWhichIsA("BasePart")
-			serial = getSerial(model)
+
+			local timeout = tick() + 5
+
+			repeat
+				task.wait(0.05)
+				serial = getSerial(model)
+			until serial or tick() > timeout
+
 		end
 
 	end
 
+	--------------------------------------------------
+	-- Resize / position
+	--------------------------------------------------
+
 	if serial then
-		ChangeSizeRemote:InvokeServer(serial,Plot,job.size,job.worldCF)
+
+		task.wait(0.05)
+
+		pcall(function()
+			ChangeSizeRemote:InvokeServer(serial,Plot,job.size,job.worldCF)
+		end)
+
 	end
 
 	built += 1
 	progress.Text = built.." / "..total
 
-	task.wait(0.05)
+	task.wait(0.08)
 
 end
 
 progress.Text = "Build Complete"
+
 print("Blueprint Build Complete")
