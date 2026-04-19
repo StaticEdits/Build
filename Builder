@@ -169,14 +169,26 @@ local function colorToHex(c)
 	return string.format("%02x%02x%02x",r,g,b)
 end
 
-local function getPlot(playerName)
-	local name = playerName == "" and LocalPlayer.Name or playerName
-	for _,plot in ipairs(Workspace.Property.Plots:GetChildren()) do
-		local empty = plot:FindFirstChild("Empty")
-		if empty and empty:FindFirstChild("Owner") and empty.Owner.Value == name then
-			return empty
+local function getPlot(name)
+	local playerName = (name ~= "" and name) or game.Players.LocalPlayer.Name
+
+	for _, plot in ipairs(workspace.Property.Plots:GetChildren()) do
+		for _, obj in ipairs(plot:GetDescendants()) do
+			if obj.Name == "Owner" then
+				-- ObjectValue support
+				if obj:IsA("ObjectValue") and obj.Value and obj.Value.Name == playerName then
+					return obj.Parent
+				end
+
+				-- StringValue support
+				if obj:IsA("StringValue") and obj.Value == playerName then
+					return obj.Parent
+				end
+			end
 		end
 	end
+
+	return nil
 end
 
 --------------------------------------------------
