@@ -1,1 +1,223 @@
+-- Blueprint Exporter (Clean Version)
 
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+
+local RSFurniture = ReplicatedStorage:WaitForChild("Furniture")
+
+--------------------------------------------------
+-- GUI
+--------------------------------------------------
+local gui = Instance.new("ScreenGui")
+gui.Name = "BlueprintExporter"
+gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0,450,0,500)
+frame.Position = UDim2.new(0.5,-225,0.5,-250)
+frame.BackgroundColor3 = Color3.fromRGB(40,40,45)
+frame.Active = true
+frame.Draggable = true
+frame.Parent = gui
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1,0,0,30)
+title.BackgroundColor3 = Color3.fromRGB(30,30,35)
+title.Text = "Blueprint Exporter"
+title.TextColor3 = Color3.new(1,1,1)
+title.Font = Enum.Font.SourceSansBold
+title.TextScaled = true
+title.Parent = frame
+
+-- Player box
+local playerBox = Instance.new("TextBox")
+playerBox.Size = UDim2.new(0,200,0,25)
+playerBox.Position = UDim2.new(0,10,0,40)
+playerBox.PlaceholderText = "Player Name (blank = you)"
+playerBox.BackgroundColor3 = Color3.fromRGB(50,50,55)
+playerBox.TextColor3 = Color3.new(1,1,1)
+playerBox.BorderSizePixel = 0
+playerBox.Parent = frame
+
+-- Total parts label
+local totalPartsLabel = Instance.new("TextLabel")
+totalPartsLabel.Size = UDim2.new(0,200,0,25)
+totalPartsLabel.Position = UDim2.new(0,220,0,40)
+totalPartsLabel.BackgroundTransparency = 1
+totalPartsLabel.TextColor3 = Color3.new(1,1,1)
+totalPartsLabel.Font = Enum.Font.SourceSansBold
+totalPartsLabel.TextScaled = true
+totalPartsLabel.Text = "Total parts: 0"
+totalPartsLabel.Parent = frame
+
+-- Scroll area
+local scrollFrame = Instance.new("ScrollingFrame")
+scrollFrame.Size = UDim2.new(1,-20,1,-100)
+scrollFrame.Position = UDim2.new(0,10,0,70)
+scrollFrame.CanvasSize = UDim2.new(0,0,0,0)
+scrollFrame.ScrollBarThickness = 8
+scrollFrame.BackgroundTransparency = 1
+scrollFrame.Parent = frame
+
+local blueprintBoxes = {}
+local blueprintLabels = {}
+
+local MAX_BOXES = 11
+local BOX_HEIGHT = 90
+local currentY = 0
+
+for i = 1, MAX_BOXES do
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1,0,0,20)
+	label.Position = UDim2.new(0,0,0,currentY)
+	label.BackgroundColor3 = Color3.fromRGB(35,35,40)
+	label.TextColor3 = Color3.new(1,1,1)
+	label.Text = "Box "..i..": 0 parts"
+	label.Font = Enum.Font.SourceSansBold
+	label.TextScaled = true
+	label.Parent = scrollFrame
+
+	currentY += 20
+
+	local box = Instance.new("TextBox")
+	box.Size = UDim2.new(1,0,0,BOX_HEIGHT)
+	box.Position = UDim2.new(0,0,0,currentY)
+	box.BackgroundColor3 = Color3.fromRGB(50,50,55)
+	box.TextColor3 = Color3.new(1,1,1)
+	box.MultiLine = true
+	box.TextWrapped = true
+	box.ClearTextOnFocus = false
+	box.BorderSizePixel = 0
+	box.Parent = scrollFrame
+
+	table.insert(blueprintBoxes, box)
+	table.insert(blueprintLabels, label)
+
+	currentY += BOX_HEIGHT + 5
+end
+
+scrollFrame.CanvasSize = UDim2.new(0,0,0,currentY)
+
+-- Export button
+local exportButton = Instance.new("TextButton")
+exportButton.Size = UDim2.new(0,150,0,30)
+exportButton.Position = UDim2.new(0,10,1,-35)
+exportButton.BackgroundColor3 = Color3.fromRGB(70,120,180)
+exportButton.Text = "Export Blueprint"
+exportButton.TextColor3 = Color3.new(1,1,1)
+exportButton.Font = Enum.Font.SourceSansBold
+exportButton.TextScaled = true
+exportButton.BorderSizePixel = 0
+exportButton.Parent = frame
+
+--------------------------------------------------
+-- HELPERS
+--------------------------------------------------
+local allowedItems = {"Building Block","Grass","Glass Pane"}
+
+local function isAllowedItem(name)
+	for _,a in ipairs(allowedItems) do
+		if string.find(name,a) then return true end
+	end
+end
+
+local function cfToString(cf)
+	local t = {cf:GetComponents()}
+	for i,v in ipairs(t) do t[i] = string.format("%.5f",v) end
+	return table.concat(t,",")
+end
+
+local function sizeToString(size)
+	return table.concat({size.X,size.Y,size.Z},",")
+end
+
+local function colorToHex(c)
+	local r = math.floor(c.R*255+0.5)
+	local g = math.floor(c.G*255+0.5)
+	local b = math.floor(c.B*255+0.5)
+	return string.format("%02x%02x%02x",r,g,b)
+end
+
+local function getPlot(name)
+	local playerName = name ~= "" and name or LocalPlayer.Name
+	for _,plot in ipairs(Workspace.Property.Plots:GetChildren()) do
+		local empty = plot:FindFirstChild("Empty")
+		if empty and empty:FindFirstChild("Owner") and empty.Owner.Value == playerName then
+			return empty
+		end
+	end
+end
+
+--------------------------------------------------
+-- EXPORT
+--------------------------------------------------
+local function exportBlueprint()
+	local plot = getPlot(playerBox.Text)
+	if not plot then warn("No plot") return end
+
+	local terrain = plot:FindFirstChild("Terrain") and plot.Terrain:FindFirstChild("Grass")
+	local furniture = plot:FindFirstChild("ActiveAssets") and plot.ActiveAssets:FindFirstChild("Furniture")
+
+	if not terrain or not furniture then
+		warn("Missing data")
+		return
+	end
+
+	local blocks = {}
+
+	for _,model in ipairs(furniture:GetChildren()) do
+		local item = model:FindFirstChild("Item")
+		local color = model:FindFirstChild("Color")
+
+		if item and color and isAllowedItem(item.Value) then
+			local id
+
+			for _,f in ipairs(RSFurniture:GetChildren()) do
+				if f:IsA("ImageButton") and string.lower(f.Name) == string.lower(item.Value) and f:FindFirstChild("Id") then
+					id = f.Id.Value
+					break
+				end
+			end
+
+			if not id then continue end
+
+			for _,part in ipairs(model:GetDescendants()) do
+				if part:IsA("BasePart") then
+					local rel = terrain.CFrame:ToObjectSpace(part.CFrame)
+
+					table.insert(blocks, table.concat({
+						id,
+						cfToString(rel),
+						model.Color.Value,
+						sizeToString(part.Size),
+						colorToHex(part.Color)
+					},"|"))
+				end
+			end
+		end
+	end
+
+	totalPartsLabel.Text = "Total parts: "..#blocks
+
+	local partsPerBox = 800
+	local index = 1
+
+	for i = 1, #blueprintBoxes do
+		local chunk = {}
+
+		for j = 1, partsPerBox do
+			if index > #blocks then break end
+			table.insert(chunk, blocks[index])
+			index += 1
+		end
+
+		blueprintBoxes[i].Text = table.concat(chunk,";")
+		blueprintLabels[i].Text = "Box "..i..": "..#chunk.." parts"
+	end
+
+	print("Export complete:", #blocks)
+end
+
+exportButton.MouseButton1Click:Connect(exportBlueprint)
