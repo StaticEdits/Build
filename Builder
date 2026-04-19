@@ -1,0 +1,303 @@
+-- Blueprint Manager: Exporter + Importer
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+
+local PlaceFurnitureRemote = ReplicatedStorage.Relays.House:WaitForChild("PlaceFurniture")
+local RSFurniture = ReplicatedStorage:WaitForChild("Furniture")
+
+--------------------------------------------------
+-- GUI
+--------------------------------------------------
+local gui = Instance.new("ScreenGui")
+gui.Name = "BlueprintManager"
+gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0,450,0,350)
+frame.Position = UDim2.new(0.5,-225,0.5,-175)
+frame.BackgroundColor3 = Color3.fromRGB(40,40,45)
+frame.Active = true
+frame.Draggable = true
+frame.Parent = gui
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1,0,0,30)
+title.BackgroundColor3 = Color3.fromRGB(30,30,35)
+title.Text = "Blueprint Manager"
+title.TextColor3 = Color3.new(1,1,1)
+title.Font = Enum.Font.SourceSansBold
+title.TextScaled = true
+title.Parent = frame
+
+-- Tabs
+local exportTab = Instance.new("TextButton")
+exportTab.Size = UDim2.new(0,100,0,25)
+exportTab.Position = UDim2.new(0,10,0,35)
+exportTab.Text = "Export"
+exportTab.BackgroundColor3 = Color3.fromRGB(70,120,180)
+exportTab.TextColor3 = Color3.new(1,1,1)
+exportTab.Font = Enum.Font.SourceSansBold
+exportTab.TextScaled = true
+exportTab.BorderSizePixel = 0
+exportTab.Parent = frame
+
+local importTab = Instance.new("TextButton")
+importTab.Size = UDim2.new(0,100,0,25)
+importTab.Position = UDim2.new(0,120,0,35)
+importTab.Text = "Import"
+importTab.BackgroundColor3 = Color3.fromRGB(100,100,100)
+importTab.TextColor3 = Color3.new(1,1,1)
+importTab.Font = Enum.Font.SourceSansBold
+importTab.TextScaled = true
+importTab.BorderSizePixel = 0
+importTab.Parent = frame
+
+local contentFrame = Instance.new("Frame")
+contentFrame.Size = UDim2.new(1,-20,0,260)
+contentFrame.Position = UDim2.new(0,10,0,70)
+contentFrame.BackgroundTransparency = 1
+contentFrame.Parent = frame
+
+-- Player Name
+local playerBox = Instance.new("TextBox")
+playerBox.Size = UDim2.new(0,200,0,25)
+playerBox.Position = UDim2.new(0,0,0,0)
+playerBox.PlaceholderText = "Player Name (leave blank for self)"
+playerBox.BackgroundColor3 = Color3.fromRGB(50,50,55)
+playerBox.TextColor3 = Color3.new(1,1,1)
+playerBox.BorderSizePixel = 0
+playerBox.Parent = contentFrame
+
+-- Blueprint textbox
+local blueprintBox = Instance.new("TextBox")
+blueprintBox.Size = UDim2.new(0,420,0,180)
+blueprintBox.Position = UDim2.new(0,0,0,35)
+blueprintBox.BackgroundColor3 = Color3.fromRGB(50,50,55)
+blueprintBox.TextColor3 = Color3.new(1,1,1)
+blueprintBox.TextWrapped = true
+blueprintBox.MultiLine = true
+blueprintBox.ClearTextOnFocus = false
+blueprintBox.BorderSizePixel = 0
+blueprintBox.Parent = contentFrame
+
+-- Action button
+local actionButton = Instance.new("TextButton")
+actionButton.Size = UDim2.new(0,150,0,30)
+actionButton.Position = UDim2.new(0,0,0,225)
+actionButton.BackgroundColor3 = Color3.fromRGB(70,120,180)
+actionButton.TextColor3 = Color3.new(1,1,1)
+actionButton.Font = Enum.Font.SourceSansBold
+actionButton.TextScaled = true
+actionButton.BorderSizePixel = 0
+actionButton.Parent = contentFrame
+
+-- Progress label
+local progressLabel = Instance.new("TextLabel")
+progressLabel.Size = UDim2.new(0,250,0,25)
+progressLabel.Position = UDim2.new(0,160,0,225)
+progressLabel.BackgroundTransparency = 1
+progressLabel.TextColor3 = Color3.new(1,1,1)
+progressLabel.Font = Enum.Font.SourceSansBold
+progressLabel.TextScaled = true
+progressLabel.Text = ""
+progressLabel.Parent = contentFrame
+
+--------------------------------------------------
+-- TAB LOGIC
+--------------------------------------------------
+local currentTab = "Export"
+local function switchTab(tab)
+	currentTab = tab
+	if tab == "Export" then
+		exportTab.BackgroundColor3 = Color3.fromRGB(70,120,180)
+		importTab.BackgroundColor3 = Color3.fromRGB(100,100,100)
+		actionButton.Text = "Export Blueprint"
+	else
+		exportTab.BackgroundColor3 = Color3.fromRGB(100,100,100)
+		importTab.BackgroundColor3 = Color3.fromRGB(70,120,180)
+		actionButton.Text = "Run Blueprint"
+	end
+end
+exportTab.MouseButton1Click:Connect(function() switchTab("Export") end)
+importTab.MouseButton1Click:Connect(function() switchTab("Import") end)
+switchTab("Export")
+
+--------------------------------------------------
+-- HELPERS
+--------------------------------------------------
+local allowedItems = {"Building Block","Grass","Glass Pane"}
+local function isAllowedItem(name)
+	for _,a in ipairs(allowedItems) do
+		if string.find(name,a) then return true end
+	end
+	return false
+end
+
+local function cfToString(cf)
+	local c = {cf:GetComponents()}
+	for i,v in ipairs(c) do c[i] = string.format("%.5f",v) end
+	return table.concat(c,",")
+end
+
+local function stringToCFrame(str)
+	local nums = {}
+	for v in string.gmatch(str,"[^,]+") do table.insert(nums,tonumber(v)) end
+	return CFrame.new(
+		nums[1],nums[2],nums[3],
+		nums[4],nums[5],nums[6],
+		nums[7],nums[8],nums[9],
+		nums[10],nums[11],nums[12]
+	)
+end
+
+local function sizeToString(size)
+	return table.concat({size.X,size.Y,size.Z},",")
+end
+
+local function stringToSize(str)
+	local nums = {}
+	for v in string.gmatch(str,"[^,]+") do table.insert(nums,tonumber(v)) end
+	return {X=nums[1],Y=nums[2],Z=nums[3],P=10}
+end
+
+local function colorToHex(c)
+	local r = math.clamp(math.floor(c.R*255+0.5),0,255)
+	local g = math.clamp(math.floor(c.G*255+0.5),0,255)
+	local b = math.clamp(math.floor(c.B*255+0.5),0,255)
+	return string.format("%02x%02x%02x",r,g,b)
+end
+
+local function getPlot(playerName)
+	local name = playerName == "" and LocalPlayer.Name or playerName
+	for _,plot in ipairs(Workspace.Property.Plots:GetChildren()) do
+		local empty = plot:FindFirstChild("Empty")
+		if empty and empty:FindFirstChild("Owner") and empty.Owner.Value == name then
+			return empty
+		end
+	end
+end
+
+--------------------------------------------------
+-- EXPORT FUNCTION
+--------------------------------------------------
+local function exportBlueprint()
+	local plot = getPlot(playerBox.Text)
+	if not plot then warn("Plot not found") return end
+
+	local terrainBase = plot:FindFirstChild("Terrain") and plot.Terrain:FindFirstChild("Grass")
+	if not terrainBase then warn("Terrain.Grass not found") return end
+
+	local furnitureFolder = plot:FindFirstChild("ActiveAssets") and plot.ActiveAssets:FindFirstChild("Furniture")
+	if not furnitureFolder then warn("No furniture found") return end
+
+	local blocks = {}
+	for _,model in ipairs(furnitureFolder:GetChildren()) do
+		local item = model:FindFirstChild("Item")
+		local color = model:FindFirstChild("Color")
+		if item and color and isAllowedItem(item.Value) then
+			local id
+			for _,fbtn in ipairs(RSFurniture:GetChildren()) do
+				if fbtn:IsA("ImageButton") and string.lower(fbtn.Name) == string.lower(item.Value) and fbtn:FindFirstChild("Id") then
+					id = fbtn.Id.Value
+					break
+				end
+			end
+			if not id then continue end
+
+			for _,part in ipairs(model:GetDescendants()) do
+				if part:IsA("BasePart") then
+					local rel = terrainBase.CFrame:ToObjectSpace(part.CFrame)
+					local cfStr = cfToString(rel)
+					local sizeStr = sizeToString(part.Size)
+					local hex = colorToHex(part.Color)
+					local block = table.concat({id, cfStr, model.Color.Value, sizeStr, hex}, "|")
+					table.insert(blocks, block)
+				end
+			end
+		end
+	end
+
+	if #blocks == 0 then warn("No valid parts found") return end
+	local blueprint = table.concat(blocks,";")
+	blueprintBox.Text = blueprint
+
+	local value = plot:FindFirstChild("Blueprint") or Instance.new("StringValue")
+	value.Name = "Blueprint"
+	value.Value = blueprint
+	value.Parent = plot
+	print("Blueprint exported successfully!")
+end
+
+--------------------------------------------------
+-- IMPORT FUNCTION
+--------------------------------------------------
+local function importBlueprint()
+	local plot = getPlot(playerBox.Text)
+	if not plot then warn("Plot not found") return end
+	local builderBase = plot:FindFirstChild("Base")
+	if not builderBase then warn("Base missing") return end
+
+	local code = blueprintBox.Text
+	if code == "" then warn("No blueprint code") return end
+
+	local blocks = string.split(code,";")
+	local total = #blocks
+	local count = 0
+
+	for _,block in ipairs(blocks) do
+		if block ~= "" then
+			local data = string.split(block,"|")
+			local id = data[1]
+			local relCFrame = stringToCFrame(data[2])
+			local color = data[3]
+			local partSize = stringToSize(data[4])
+			local hex = data[5]
+
+			-- Bottom offset applied here
+			local finalRelCFrame = relCFrame * CFrame.new(0,-partSize.Y/2,0)
+
+			-- Correct size for placement
+			local sizeArg = {
+				X = partSize.X*10,
+				Y = partSize.Y*10,
+				Z = partSize.Z*10,
+				P = 10
+			}
+
+			local placingPlayerName = playerBox.Text ~= "" and playerBox.Text or LocalPlayer.Name
+local PlacingFromUser = Players:FindFirstChild(placingPlayerName)
+
+local args = {{
+	PurchaseForPlace = true,
+	Id = id,
+	House = plot,
+	RelativeCFrame = finalRelCFrame,
+	Color = color,
+	Size = sizeArg,
+	CustomColors = {hex},
+	PlacingFromUser = PlacingFromUser
+}}
+
+			pcall(function()
+				PlaceFurnitureRemote:InvokeServer(unpack(args))
+			end)
+
+			count += 1
+			progressLabel.Text = "Building "..count.." / "..total
+		end
+	end
+	progressLabel.Text = "Build Complete!"
+end
+
+--------------------------------------------------
+-- BUTTON ACTION
+--------------------------------------------------
+actionButton.MouseButton1Click:Connect(function()
+	if currentTab == "Export" then
+		exportBlueprint()
+	else
+		importBlueprint()
+	end
+end)
