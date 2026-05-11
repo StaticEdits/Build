@@ -1,0 +1,453 @@
+--// SERVICES
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+
+--// PLAYER
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+local Camera = Workspace.CurrentCamera
+
+--// REMOTES
+local HouseRelay = ReplicatedStorage:WaitForChild("Relays"):WaitForChild("House")
+local ChangeColor = HouseRelay:WaitForChild("ChangeFurnitureColor")
+local ChangeTexture = HouseRelay:WaitForChild("ChangeFurnitureTexture")
+
+--// SETTINGS
+local Enabled = true
+local Dragging = false
+local DragStart = nil
+local CURRENT_COLOR = "8ca550"
+
+--// STORAGE
+local SelectedModels = {}
+local HighlightMap = {}
+
+--// GUI
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "FurniturePainter"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local Main = Instance.new("Frame")
+Main.Size = UDim2.new(0, 240, 0, 210)
+Main.Position = UDim2.new(0, 20, 0.5, -105)
+Main.BackgroundColor3 = Color3.fromRGB(35,35,35)
+Main.BorderSizePixel = 0
+Main.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0,8)
+MainCorner.Parent = Main
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1,0,0,25)
+Title.BackgroundTransparency = 1
+Title.Text = "Furniture Painter"
+Title.TextColor3 = Color3.new(1,1,1)
+Title.Font = Enum.Font.SourceSansBold
+Title.TextSize = 22
+Title.Parent = Main
+
+local ToggleButton = Instance.new("TextButton")
+ToggleButton.Size = UDim2.new(0,70,0,25)
+ToggleButton.Position = UDim2.new(1,-80,0,5)
+ToggleButton.BackgroundColor3 = Color3.fromRGB(0,170,0)
+ToggleButton.Text = "Enabled"
+ToggleButton.TextColor3 = Color3.new(1,1,1)
+ToggleButton.Font = Enum.Font.SourceSansBold
+ToggleButton.TextSize = 18
+ToggleButton.Parent = Main
+
+local ToggleCorner = Instance.new("UICorner")
+ToggleCorner.CornerRadius = UDim.new(0,6)
+ToggleCorner.Parent = ToggleButton
+
+local ColorBox = Instance.new("TextBox")
+ColorBox.Size = UDim2.new(1,-20,0,35)
+ColorBox.Position = UDim2.new(0,10,0,35)
+ColorBox.PlaceholderText = "Hex Color"
+ColorBox.Text = CURRENT_COLOR
+ColorBox.TextColor3 = Color3.new(1,1,1)
+ColorBox.BackgroundColor3 = Color3.fromRGB(50,50,50)
+ColorBox.ClearTextOnFocus = false
+ColorBox.Font = Enum.Font.SourceSans
+ColorBox.TextSize = 22
+ColorBox.Parent = Main
+
+local ColorCorner = Instance.new("UICorner")
+ColorCorner.CornerRadius = UDim.new(0,6)
+ColorCorner.Parent = ColorBox
+
+local MaterialBox = Instance.new("TextBox")
+MaterialBox.Size = UDim2.new(1,-20,0,35)
+MaterialBox.Position = UDim2.new(0,10,0,80)
+MaterialBox.PlaceholderText = "Material ID (16 = Neon)"
+MaterialBox.Text = "16"
+MaterialBox.TextColor3 = Color3.new(1,1,1)
+MaterialBox.BackgroundColor3 = Color3.fromRGB(50,50,50)
+MaterialBox.ClearTextOnFocus = false
+MaterialBox.Font = Enum.Font.SourceSans
+MaterialBox.TextSize = 22
+MaterialBox.Parent = Main
+
+local MaterialCorner = Instance.new("UICorner")
+MaterialCorner.CornerRadius = UDim.new(0,6)
+MaterialCorner.Parent = MaterialBox
+
+local Preview = Instance.new("Frame")
+Preview.Size = UDim2.new(0,40,0,40)
+Preview.Position = UDim2.new(1,-50,0,125)
+Preview.BackgroundColor3 = Color3.fromRGB(140,165,80)
+Preview.BorderSizePixel = 0
+Preview.Parent = Main
+
+local PreviewCorner = Instance.new("UICorner")
+PreviewCorner.CornerRadius = UDim.new(0,6)
+PreviewCorner.Parent = Preview
+
+local Info = Instance.new("TextLabel")
+Info.Size = UDim2.new(1,-60,0,70)
+Info.Position = UDim2.new(0,10,0,125)
+Info.BackgroundTransparency = 1
+Info.Text =
+	"Click = Select\n" ..
+	"CTRL+Click = Multi Select\n" ..
+	"CTRL+Drag = Box Select\n" ..
+	"L = Paint | P = Toggle"
+Info.TextColor3 = Color3.new(1,1,1)
+Info.TextXAlignment = Enum.TextXAlignment.Left
+Info.TextYAlignment = Enum.TextYAlignment.Top
+Info.Font = Enum.Font.SourceSans
+Info.TextSize = 16
+Info.Parent = Main
+
+--// BOX UI
+local SelectionFrame = Instance.new("Frame")
+SelectionFrame.Visible = false
+SelectionFrame.BackgroundTransparency = 0.7
+SelectionFrame.BackgroundColor3 = Color3.fromRGB(0,170,255)
+SelectionFrame.BorderSizePixel = 2
+SelectionFrame.BorderColor3 = Color3.fromRGB(0,170,255)
+SelectionFrame.Parent = ScreenGui
+
+--// FUNCTIONS
+
+local function hexToColor3(hex)
+	hex = hex:gsub("#","")
+
+	if #hex ~= 6 then
+		return Color3.new(1,1,1)
+	end
+
+	local r = tonumber(hex:sub(1,2),16) or 255
+	local g = tonumber(hex:sub(3,4),16) or 255
+	local b = tonumber(hex:sub(5,6),16) or 255
+
+	return Color3.fromRGB(r,g,b)
+end
+
+local function updatePreview()
+	Preview.BackgroundColor3 = hexToColor3(ColorBox.Text)
+end
+
+ColorBox:GetPropertyChangedSignal("Text"):Connect(updatePreview)
+
+local function getPlot(name)
+	local playerName = (name ~= "" and name) or LocalPlayer.Name
+
+	for _, plot in ipairs(Workspace.Property.Plots:GetChildren()) do
+		for _, obj in ipairs(plot:GetDescendants()) do
+			if obj.Name == "Owner" then
+				if obj:IsA("ObjectValue") and obj.Value and obj.Value.Name == playerName then
+					return obj.Parent
+				elseif obj:IsA("StringValue") and obj.Value == playerName then
+					return obj.Parent
+				end
+			end
+		end
+	end
+end
+
+local Plot = getPlot("")
+
+local function clearSelection()
+	for _, highlight in pairs(HighlightMap) do
+		if highlight then
+			highlight:Destroy()
+		end
+	end
+
+	table.clear(SelectedModels)
+	table.clear(HighlightMap)
+end
+
+local function addHighlight(model)
+	if HighlightMap[model] then
+		return
+	end
+
+	local highlight = Instance.new("Highlight")
+	highlight.FillColor = Color3.fromRGB(0,170,255)
+	highlight.OutlineColor = Color3.new(1,1,1)
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.Parent = model
+
+	HighlightMap[model] = highlight
+end
+
+local function removeHighlight(model)
+	if HighlightMap[model] then
+		HighlightMap[model]:Destroy()
+		HighlightMap[model] = nil
+	end
+end
+
+local function getFurnitureModel(part)
+	local current = part
+
+	while current and current ~= Workspace do
+		if current:IsA("Model") and current:GetAttribute("SerialId") then
+			return current
+		end
+
+		current = current.Parent
+	end
+
+	return nil
+end
+
+local function toggleSelection(model)
+	if not model then
+		return
+	end
+
+	local index = table.find(SelectedModels, model)
+
+	if index then
+		table.remove(SelectedModels, index)
+		removeHighlight(model)
+	else
+		table.insert(SelectedModels, model)
+		addHighlight(model)
+	end
+end
+
+local function getFurnitureId(serialRaw)
+	if typeof(serialRaw) == "string" then
+		local split = string.split(serialRaw, "_")
+		return tonumber(split[#split])
+	end
+
+	return tonumber(serialRaw)
+end
+
+local function applyColor(model)
+	local serialRaw = model:GetAttribute("SerialId")
+	if not serialRaw then
+		return
+	end
+
+	local serialId = getFurnitureId(serialRaw)
+	if not serialId then
+		return
+	end
+
+	local hex = ColorBox.Text:gsub("#","")
+	local materialId = tonumber(MaterialBox.Text) or 16
+
+	pcall(function()
+		ChangeColor:InvokeServer(
+			serialId,
+			Plot,
+			{
+				hex
+			}
+		)
+	end)
+
+	pcall(function()
+		ChangeTexture:InvokeServer(
+			serialId,
+			Plot,
+			1,
+			materialId
+		)
+	end)
+end
+
+local function applyToSelection()
+	for _, model in ipairs(SelectedModels) do
+		applyColor(model)
+	end
+end
+
+--// TOGGLE BUTTON
+ToggleButton.MouseButton1Click:Connect(function()
+	Enabled = not Enabled
+
+	ToggleButton.Text = Enabled and "Enabled" or "Disabled"
+
+	ToggleButton.BackgroundColor3 =
+		Enabled and Color3.fromRGB(0,170,0)
+		or Color3.fromRGB(170,0,0)
+end)
+
+--// CLICK SELECT
+Mouse.Button1Down:Connect(function()
+	if not Enabled then
+		return
+	end
+
+	local ctrl =
+		UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+		or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+
+	if ctrl then
+		Dragging = true
+		DragStart = UserInputService:GetMouseLocation()
+
+		SelectionFrame.Visible = true
+		SelectionFrame.Position = UDim2.fromOffset(DragStart.X, DragStart.Y)
+		SelectionFrame.Size = UDim2.new(0,0,0,0)
+	end
+end)
+
+Mouse.Button1Up:Connect(function()
+	if not Enabled then
+		return
+	end
+
+	local ctrl =
+		UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+		or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+
+	local mousePos = UserInputService:GetMouseLocation()
+
+	-- CTRL CLICK
+	if ctrl and DragStart then
+		local distance = (Vector2.new(mousePos.X, mousePos.Y)
+			- Vector2.new(DragStart.X, DragStart.Y)).Magnitude
+
+		if distance < 8 then
+			SelectionFrame.Visible = false
+			Dragging = false
+
+			local target = Mouse.Target
+			if not target then
+				return
+			end
+
+			local model = getFurnitureModel(target)
+
+			if model then
+				toggleSelection(model)
+			end
+
+			return
+		end
+	end
+
+	-- NORMAL CLICK
+	if not ctrl then
+		local target = Mouse.Target
+
+		if not target then
+			return
+		end
+
+		clearSelection()
+
+		local model = getFurnitureModel(target)
+
+		if model then
+			toggleSelection(model)
+		end
+
+		return
+	end
+
+	-- BOX SELECT
+	if Dragging and DragStart then
+		Dragging = false
+		SelectionFrame.Visible = false
+
+		local minX = math.min(DragStart.X, mousePos.X)
+		local minY = math.min(DragStart.Y, mousePos.Y)
+		local maxX = math.max(DragStart.X, mousePos.X)
+		local maxY = math.max(DragStart.Y, mousePos.Y)
+
+		for _, obj in ipairs(Workspace:GetDescendants()) do
+			if obj:IsA("BasePart") then
+				local pos, visible = Camera:WorldToViewportPoint(obj.Position)
+
+				if visible then
+					if pos.X >= minX and pos.X <= maxX
+					and pos.Y >= minY and pos.Y <= maxY then
+
+						local model = getFurnitureModel(obj)
+
+						if model and not table.find(SelectedModels, model) then
+							table.insert(SelectedModels, model)
+							addHighlight(model)
+						end
+					end
+				end
+			end
+		end
+	end
+end)
+
+--// BOX UPDATE
+RunService.RenderStepped:Connect(function()
+	if not Dragging or not DragStart then
+		return
+	end
+
+	local mousePos = UserInputService:GetMouseLocation()
+
+	local minX = math.min(DragStart.X, mousePos.X)
+	local minY = math.min(DragStart.Y, mousePos.Y)
+	local maxX = math.max(DragStart.X, mousePos.X)
+	local maxY = math.max(DragStart.Y, mousePos.Y)
+
+	SelectionFrame.Position = UDim2.fromOffset(minX, minY)
+	SelectionFrame.Size = UDim2.fromOffset(
+		maxX - minX,
+		maxY - minY
+	)
+end)
+
+--// KEYBINDS
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed then
+		return
+	end
+
+	-- APPLY PAINT
+	if input.KeyCode == Enum.KeyCode.L then
+		applyToSelection()
+	end
+
+	-- CLEAR
+	if input.KeyCode == Enum.KeyCode.Backspace then
+		clearSelection()
+	end
+
+	-- TOGGLE
+	if input.KeyCode == Enum.KeyCode.P then
+		Enabled = not Enabled
+
+		ToggleButton.Text =
+			Enabled and "Enabled"
+			or "Disabled"
+
+		ToggleButton.BackgroundColor3 =
+			Enabled and Color3.fromRGB(0,170,0)
+			or Color3.fromRGB(170,0,0)
+	end
+end)
+
+print("Furniture Painter Loaded")
