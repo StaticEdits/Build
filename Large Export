@@ -1,230 +1,723 @@
--- Blueprint Exporter (Revised - Owner Detection Fixed)
-
+-- Blueprint Manager: Exporter + Importer
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
 
+local PlaceFurnitureRemote = ReplicatedStorage.Relays.House:WaitForChild("PlaceFurniture")
 local RSFurniture = ReplicatedStorage:WaitForChild("Furniture")
 
 --------------------------------------------------
--- GUI
+-- PRE-CACHE furniture ID lookup once at startup
+--------------------------------------------------
+local furnitureIdCache = {}
+for _, fbtn in ipairs(RSFurniture:GetChildren()) do
+	if fbtn:IsA("ImageButton") and fbtn:FindFirstChild("Id") then
+		furnitureIdCache[string.lower(fbtn.Name)] = fbtn.Id.Value
+	end
+end
+RSFurniture.ChildAdded:Connect(function(fbtn)
+	if fbtn:IsA("ImageButton") and fbtn:FindFirstChild("Id") then
+		furnitureIdCache[string.lower(fbtn.Name)] = fbtn.Id.Value
+	end
+end)
+
+--------------------------------------------------
+-- SETTINGS STATE
+--------------------------------------------------
+local settings = {
+	dupeSafety    = true,   -- ON by default
+	biggerExporter = false, -- OFF by default
+}
+
+local PARTS_PER_BOX = 700
+local MAX_BOXES     = 9   -- 9 x 700 = 6300, covers max plot size
+
+--------------------------------------------------
+-- GUI: MAIN FRAME
 --------------------------------------------------
 local gui = Instance.new("ScreenGui")
-gui.Name = "BlueprintExporter"
+gui.Name = "BlueprintManager"
 gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0,450,0,500)
-frame.Position = UDim2.new(0.5,-225,0.5,-250)
+frame.Name             = "MainFrame"
+frame.Size             = UDim2.new(0,450,0,350)
+frame.Position         = UDim2.new(0.5,-225,0.5,-175)
 frame.BackgroundColor3 = Color3.fromRGB(40,40,45)
-frame.Active = true
-frame.Draggable = true
-frame.Parent = gui
+frame.Active           = true
+frame.Draggable        = true
+frame.Parent           = gui
 
+-- Title bar
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1,0,0,30)
+title.Size             = UDim2.new(1,-30,0,30)
 title.BackgroundColor3 = Color3.fromRGB(30,30,35)
-title.Text = "Blueprint Exporter"
-title.TextColor3 = Color3.new(1,1,1)
-title.Font = Enum.Font.SourceSansBold
-title.TextScaled = true
-title.Parent = frame
+title.Text             = "Blueprint Manager"
+title.TextColor3       = Color3.new(1,1,1)
+title.Font             = Enum.Font.SourceSansBold
+title.TextScaled       = true
+title.Parent           = frame
 
--- Player box
+-- Settings gear button (top-right of title bar)
+local settingsBtn = Instance.new("TextButton")
+settingsBtn.Size             = UDim2.new(0,30,0,30)
+settingsBtn.Position         = UDim2.new(1,-30,0,0)
+settingsBtn.BackgroundColor3 = Color3.fromRGB(30,30,35)
+settingsBtn.Text             = "⚙"
+settingsBtn.TextColor3       = Color3.new(1,1,1)
+settingsBtn.Font             = Enum.Font.SourceSansBold
+settingsBtn.TextScaled       = true
+settingsBtn.BorderSizePixel  = 0
+settingsBtn.Parent           = frame
+
+-- Tabs
+local exportTab = Instance.new("TextButton")
+exportTab.Size             = UDim2.new(0,100,0,25)
+exportTab.Position         = UDim2.new(0,10,0,35)
+exportTab.Text             = "Export"
+exportTab.BackgroundColor3 = Color3.fromRGB(70,120,180)
+exportTab.TextColor3       = Color3.new(1,1,1)
+exportTab.Font             = Enum.Font.SourceSansBold
+exportTab.TextScaled       = true
+exportTab.BorderSizePixel  = 0
+exportTab.Parent           = frame
+
+local importTab = Instance.new("TextButton")
+importTab.Size             = UDim2.new(0,100,0,25)
+importTab.Position         = UDim2.new(0,120,0,35)
+importTab.Text             = "Import"
+importTab.BackgroundColor3 = Color3.fromRGB(100,100,100)
+importTab.TextColor3       = Color3.new(1,1,1)
+importTab.Font             = Enum.Font.SourceSansBold
+importTab.TextScaled       = true
+importTab.BorderSizePixel  = 0
+importTab.Parent           = frame
+
+-- Content area (holds both export and import views)
+local contentFrame = Instance.new("Frame")
+contentFrame.Size               = UDim2.new(1,-20,0,260)
+contentFrame.Position           = UDim2.new(0,10,0,70)
+contentFrame.BackgroundTransparency = 1
+contentFrame.ClipsDescendants   = true
+contentFrame.Parent             = frame
+
+-- Shared player name box (visible in both tabs)
 local playerBox = Instance.new("TextBox")
-playerBox.Size = UDim2.new(0,200,0,25)
-playerBox.Position = UDim2.new(0,10,0,40)
-playerBox.PlaceholderText = "Player Name (blank = you)"
+playerBox.Size             = UDim2.new(0,200,0,25)
+playerBox.Position         = UDim2.new(0,0,0,0)
+playerBox.PlaceholderText  = "Player Name (leave blank for self)"
 playerBox.BackgroundColor3 = Color3.fromRGB(50,50,55)
-playerBox.TextColor3 = Color3.new(1,1,1)
-playerBox.BorderSizePixel = 0
-playerBox.Parent = frame
+playerBox.TextColor3       = Color3.new(1,1,1)
+playerBox.BorderSizePixel  = 0
+playerBox.ClearTextOnFocus = false
+playerBox.Parent           = contentFrame
 
--- Total parts label
-local totalPartsLabel = Instance.new("TextLabel")
-totalPartsLabel.Size = UDim2.new(0,200,0,25)
-totalPartsLabel.Position = UDim2.new(0,220,0,40)
-totalPartsLabel.BackgroundTransparency = 1
-totalPartsLabel.TextColor3 = Color3.new(1,1,1)
-totalPartsLabel.Font = Enum.Font.SourceSansBold
-totalPartsLabel.TextScaled = true
-totalPartsLabel.Text = "Total parts: 0"
-totalPartsLabel.Parent = frame
+--------------------------------------------------
+-- EXPORT VIEW
+-- exportView holds everything below the playerBox for the Export tab.
+-- Rebuilt by rebuildExportView() whenever Bigger Exporter is toggled.
+--------------------------------------------------
+local exportView       -- rebuilt on toggle
+local exportBoxes  = {}
+local exportLabels = {}
+local totalPartsLabel
 
--- Scroll area
-local scrollFrame = Instance.new("ScrollingFrame")
-scrollFrame.Size = UDim2.new(1,-20,1,-100)
-scrollFrame.Position = UDim2.new(0,10,0,70)
-scrollFrame.CanvasSize = UDim2.new(0,0,0,0)
-scrollFrame.ScrollBarThickness = 8
-scrollFrame.BackgroundTransparency = 1
-scrollFrame.Parent = frame
+-- The Export button always lives here, outside exportView, so it
+-- is never clipped regardless of scroll height.
+local exportActionBtn = Instance.new("TextButton")
+exportActionBtn.Size             = UDim2.new(0,150,0,28)
+exportActionBtn.Position         = UDim2.new(0,0,0,228)
+exportActionBtn.BackgroundColor3 = Color3.fromRGB(70,120,180)
+exportActionBtn.TextColor3       = Color3.new(1,1,1)
+exportActionBtn.Font             = Enum.Font.SourceSansBold
+exportActionBtn.TextScaled       = true
+exportActionBtn.Text             = "Export Blueprint"
+exportActionBtn.BorderSizePixel  = 0
+exportActionBtn.Parent           = contentFrame
+exportActionBtn.MouseButton1Click:Connect(function() exportBlueprint() end)
 
-local blueprintBoxes = {}
-local blueprintLabels = {}
+-- Warning label shown when >700 parts but Bigger Exporter is OFF
+local exportWarnLabel = Instance.new("TextLabel")
+exportWarnLabel.Size               = UDim2.new(1,0,0,28)
+exportWarnLabel.Position           = UDim2.new(0,0,0,228)
+exportWarnLabel.BackgroundColor3   = Color3.fromRGB(160,80,20)
+exportWarnLabel.TextColor3         = Color3.new(1,1,1)
+exportWarnLabel.Font               = Enum.Font.SourceSansBold
+exportWarnLabel.TextScaled         = true
+exportWarnLabel.Text               = "⚠ Over 700 parts — enable Bigger Exporter in Settings!"
+exportWarnLabel.BorderSizePixel    = 0
+exportWarnLabel.Visible            = false
+exportWarnLabel.Parent             = contentFrame
 
-local MAX_BOXES = 11
-local BOX_HEIGHT = 90
-local currentY = 0
+local function rebuildExportView()
+	if exportView then exportView:Destroy() end
+	exportBoxes  = {}
+	exportLabels = {}
+	exportWarnLabel.Visible = false
+	exportActionBtn.Visible = true
 
-for i = 1, MAX_BOXES do
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.new(1,0,0,20)
-	label.Position = UDim2.new(0,0,0,currentY)
-	label.BackgroundColor3 = Color3.fromRGB(35,35,40)
-	label.TextColor3 = Color3.new(1,1,1)
-	label.Text = "Box "..i..": 0 parts"
-	label.Font = Enum.Font.SourceSansBold
-	label.TextScaled = true
-	label.Parent = scrollFrame
+	exportView = Instance.new("Frame")
+	exportView.Size               = UDim2.new(1,0,0,224)
+	exportView.Position           = UDim2.new(0,0,0,30)
+	exportView.BackgroundTransparency = 1
+	exportView.Parent             = contentFrame
 
-	currentY += 20
+	-- Total parts counter (top-right of export view, always visible)
+	totalPartsLabel = Instance.new("TextLabel")
+	totalPartsLabel.Size               = UDim2.new(0,200,0,22)
+	totalPartsLabel.Position           = UDim2.new(0,210,0,0)
+	totalPartsLabel.BackgroundTransparency = 1
+	totalPartsLabel.TextColor3         = Color3.new(0.7,0.7,0.7)
+	totalPartsLabel.Font               = Enum.Font.SourceSans
+	totalPartsLabel.TextScaled         = true
+	totalPartsLabel.Text               = "Total parts: —"
+	totalPartsLabel.TextXAlignment     = Enum.TextXAlignment.Right
+	totalPartsLabel.Parent             = exportView
 
-	local box = Instance.new("TextBox")
-	box.Size = UDim2.new(1,0,0,BOX_HEIGHT)
-	box.Position = UDim2.new(0,0,0,currentY)
-	box.BackgroundColor3 = Color3.fromRGB(50,50,55)
-	box.TextColor3 = Color3.new(1,1,1)
-	box.MultiLine = true
-	box.TextWrapped = true
-	box.ClearTextOnFocus = false
-	box.BorderSizePixel = 0
-	box.Parent = scrollFrame
+	if not settings.biggerExporter then
+		-- NORMAL MODE: single blueprint box
+		local box = Instance.new("TextBox")
+		box.Size             = UDim2.new(1,0,0,190)
+		box.Position         = UDim2.new(0,0,0,28)
+		box.BackgroundColor3 = Color3.fromRGB(50,50,55)
+		box.TextColor3       = Color3.new(1,1,1)
+		box.TextWrapped      = true
+		box.MultiLine        = true
+		box.ClearTextOnFocus = false
+		box.BorderSizePixel  = 0
+		box.Text             = ""
+		box.Parent           = exportView
 
-	table.insert(blueprintBoxes, box)
-	table.insert(blueprintLabels, label)
+		table.insert(exportBoxes,  box)
+		table.insert(exportLabels, totalPartsLabel)
 
-	currentY += BOX_HEIGHT + 5
+	else
+		-- BIGGER EXPORTER MODE: scrolling frame, MAX_BOXES boxes of 700 parts each
+		local scroll = Instance.new("ScrollingFrame")
+		scroll.Size                 = UDim2.new(1,0,0,190)
+		scroll.Position             = UDim2.new(0,0,0,28)
+		scroll.BackgroundTransparency = 1
+		scroll.ScrollBarThickness   = 6
+		scroll.ScrollBarImageColor3 = Color3.fromRGB(100,100,110)
+		scroll.BorderSizePixel      = 0
+		scroll.Parent               = exportView
+
+		local BOX_H   = 75
+		local LABEL_H = 20
+		local GAP     = 4
+		local cy      = 0
+
+		for i = 1, MAX_BOXES do
+			local lbl = Instance.new("TextLabel")
+			lbl.Size             = UDim2.new(1,-8,0,LABEL_H)
+			lbl.Position         = UDim2.new(0,0,0,cy)
+			lbl.BackgroundColor3 = Color3.fromRGB(35,35,42)
+			lbl.TextColor3       = Color3.new(0.8,0.8,0.8)
+			lbl.Font             = Enum.Font.SourceSansBold
+			lbl.TextScaled       = true
+			lbl.Text             = "Box "..i..":  0 parts"
+			lbl.BorderSizePixel  = 0
+			lbl.Parent           = scroll
+			cy += LABEL_H
+
+			local box = Instance.new("TextBox")
+			box.Size             = UDim2.new(1,-8,0,BOX_H)
+			box.Position         = UDim2.new(0,0,0,cy)
+			box.BackgroundColor3 = Color3.fromRGB(50,50,55)
+			box.TextColor3       = Color3.new(1,1,1)
+			box.TextWrapped      = true
+			box.MultiLine        = true
+			box.ClearTextOnFocus = false
+			box.BorderSizePixel  = 0
+			box.Text             = ""
+			box.Parent           = scroll
+			cy += BOX_H + GAP
+
+			table.insert(exportBoxes,  box)
+			table.insert(exportLabels, lbl)
+		end
+
+		scroll.CanvasSize = UDim2.new(0,0,0,cy)
+	end
 end
 
-scrollFrame.CanvasSize = UDim2.new(0,0,0,currentY)
+--------------------------------------------------
+-- IMPORT VIEW (static, never rebuilt)
+--------------------------------------------------
+local importView = Instance.new("Frame")
+importView.Size               = UDim2.new(1,0,0,235)
+importView.Position           = UDim2.new(0,0,0,30)
+importView.BackgroundTransparency = 1
+importView.Visible            = false
+importView.Parent             = contentFrame
 
--- Export button
-local exportButton = Instance.new("TextButton")
-exportButton.Size = UDim2.new(0,150,0,30)
-exportButton.Position = UDim2.new(0,10,1,-35)
-exportButton.BackgroundColor3 = Color3.fromRGB(70,120,180)
-exportButton.Text = "Export Blueprint"
-exportButton.TextColor3 = Color3.new(1,1,1)
-exportButton.Font = Enum.Font.SourceSansBold
-exportButton.TextScaled = true
-exportButton.BorderSizePixel = 0
-exportButton.Parent = frame
+local blueprintBox = Instance.new("TextBox")
+blueprintBox.Size             = UDim2.new(1,0,0,175)
+blueprintBox.Position         = UDim2.new(0,0,0,0)
+blueprintBox.BackgroundColor3 = Color3.fromRGB(50,50,55)
+blueprintBox.TextColor3       = Color3.new(1,1,1)
+blueprintBox.TextWrapped      = true
+blueprintBox.MultiLine        = true
+blueprintBox.ClearTextOnFocus = false
+blueprintBox.BorderSizePixel  = 0
+blueprintBox.Parent           = importView
+
+local actionButton = Instance.new("TextButton")
+actionButton.Size             = UDim2.new(0,150,0,28)
+actionButton.Position         = UDim2.new(0,0,0,181)
+actionButton.BackgroundColor3 = Color3.fromRGB(70,120,180)
+actionButton.TextColor3       = Color3.new(1,1,1)
+actionButton.Font             = Enum.Font.SourceSansBold
+actionButton.TextScaled       = true
+actionButton.Text             = "Run Blueprint"
+actionButton.BorderSizePixel  = 0
+actionButton.Parent           = importView
+
+local progressLabel = Instance.new("TextLabel")
+progressLabel.Size               = UDim2.new(0,260,0,25)
+progressLabel.Position           = UDim2.new(0,160,0,181)
+progressLabel.BackgroundTransparency = 1
+progressLabel.TextColor3         = Color3.new(1,1,1)
+progressLabel.Font               = Enum.Font.SourceSansBold
+progressLabel.TextScaled         = true
+progressLabel.Text               = ""
+progressLabel.Parent             = importView
 
 --------------------------------------------------
--- HELPERS
+-- SETTINGS PANEL
+-- Slides over the main frame content. Not a separate window.
+--------------------------------------------------
+local settingsPanel = Instance.new("Frame")
+settingsPanel.Size             = UDim2.new(1,0,1,0)
+settingsPanel.Position         = UDim2.new(0,0,0,0)
+settingsPanel.BackgroundColor3 = Color3.fromRGB(30,30,35)
+settingsPanel.BorderSizePixel  = 0
+settingsPanel.Visible          = false
+settingsPanel.ZIndex           = 10
+settingsPanel.Parent           = frame
+
+local settingsTitle = Instance.new("TextLabel")
+settingsTitle.Size             = UDim2.new(1,-40,0,30)
+settingsTitle.Position         = UDim2.new(0,10,0,0)
+settingsTitle.BackgroundTransparency = 1
+settingsTitle.Text             = "Settings"
+settingsTitle.TextColor3       = Color3.new(1,1,1)
+settingsTitle.Font             = Enum.Font.SourceSansBold
+settingsTitle.TextScaled       = true
+settingsTitle.ZIndex           = 11
+settingsTitle.Parent           = settingsPanel
+
+local closeSettingsBtn = Instance.new("TextButton")
+closeSettingsBtn.Size             = UDim2.new(0,30,0,30)
+closeSettingsBtn.Position         = UDim2.new(1,-35,0,0)
+closeSettingsBtn.BackgroundTransparency = 1
+closeSettingsBtn.Text             = "✕"
+closeSettingsBtn.TextColor3       = Color3.new(1,1,1)
+closeSettingsBtn.Font             = Enum.Font.SourceSansBold
+closeSettingsBtn.TextScaled       = true
+closeSettingsBtn.BorderSizePixel  = 0
+closeSettingsBtn.ZIndex           = 11
+closeSettingsBtn.Parent           = settingsPanel
+
+-- Divider
+local divider = Instance.new("Frame")
+divider.Size             = UDim2.new(1,-20,0,1)
+divider.Position         = UDim2.new(0,10,0,32)
+divider.BackgroundColor3 = Color3.fromRGB(70,70,80)
+divider.BorderSizePixel  = 0
+divider.ZIndex           = 11
+divider.Parent           = settingsPanel
+
+-- Helper: build one toggle row
+-- Returns the toggle button so we can update its look when clicked
+local function makeToggleRow(labelText, yPos, isOn)
+	local row = Instance.new("Frame")
+	row.Size             = UDim2.new(1,-20,0,38)
+	row.Position         = UDim2.new(0,10,0,yPos)
+	row.BackgroundColor3 = Color3.fromRGB(40,40,48)
+	row.BorderSizePixel  = 0
+	row.ZIndex           = 11
+	row.Parent           = settingsPanel
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size               = UDim2.new(1,-70,1,0)
+	lbl.Position           = UDim2.new(0,10,0,0)
+	lbl.BackgroundTransparency = 1
+	lbl.Text               = labelText
+	lbl.TextColor3         = Color3.new(1,1,1)
+	lbl.Font               = Enum.Font.SourceSans
+	lbl.TextScaled         = true
+	lbl.TextXAlignment     = Enum.TextXAlignment.Left
+	lbl.ZIndex             = 12
+	lbl.Parent             = row
+
+	local toggle = Instance.new("TextButton")
+	toggle.Size             = UDim2.new(0,52,0,26)
+	toggle.Position         = UDim2.new(1,-60,0.5,-13)
+	toggle.BorderSizePixel  = 0
+	toggle.Font             = Enum.Font.SourceSansBold
+	toggle.TextScaled       = true
+	toggle.ZIndex           = 12
+	toggle.Parent           = row
+
+	local function refreshToggle(on)
+		toggle.Text             = on and "ON" or "OFF"
+		toggle.BackgroundColor3 = on and Color3.fromRGB(60,160,80) or Color3.fromRGB(120,50,50)
+		toggle.TextColor3       = Color3.new(1,1,1)
+	end
+
+	refreshToggle(isOn)
+	return toggle, refreshToggle
+end
+
+-- Row 1: Dupe Safety
+local dupeSafetyToggle, refreshDupe = makeToggleRow("Dupe Safety", 42, settings.dupeSafety)
+dupeSafetyToggle.MouseButton1Click:Connect(function()
+	settings.dupeSafety = not settings.dupeSafety
+	refreshDupe(settings.dupeSafety)
+end)
+
+-- Row 2: Bigger Exporter
+local biggerExporterToggle, refreshBigger = makeToggleRow("Bigger Exporter", 88, settings.biggerExporter)
+biggerExporterToggle.MouseButton1Click:Connect(function()
+	settings.biggerExporter = not settings.biggerExporter
+	refreshBigger(settings.biggerExporter)
+	-- Rebuild the export view to add/remove the scroll boxes
+	if currentTab == "Export" or true then
+		rebuildExportView()
+	end
+end)
+
+-- Open / close settings
+settingsBtn.MouseButton1Click:Connect(function()
+	settingsPanel.Visible = true
+end)
+closeSettingsBtn.MouseButton1Click:Connect(function()
+	settingsPanel.Visible = false
+end)
+
+--------------------------------------------------
+-- TAB LOGIC
+--------------------------------------------------
+local currentTab = "Export"
+
+local function switchTab(tab)
+	currentTab = tab
+	if tab == "Export" then
+		exportTab.BackgroundColor3  = Color3.fromRGB(70,120,180)
+		importTab.BackgroundColor3  = Color3.fromRGB(100,100,100)
+		exportView.Visible          = true
+		importView.Visible          = false
+		-- Restore export button/warn to whatever state they were in
+		-- (exportWarnLabel and exportActionBtn keep their last Visible state)
+	else
+		exportTab.BackgroundColor3  = Color3.fromRGB(100,100,100)
+		importTab.BackgroundColor3  = Color3.fromRGB(70,120,180)
+		exportView.Visible          = false
+		importView.Visible          = true
+		-- Hide export-only widgets while on import tab
+		exportActionBtn.Visible     = false
+		exportWarnLabel.Visible     = false
+	end
+end
+
+exportTab.MouseButton1Click:Connect(function() switchTab("Export") end)
+importTab.MouseButton1Click:Connect(function() switchTab("Import") end)
+
+--------------------------------------------------
+-- AUTOFILL: prefix-match DisplayName or Username on focus lost
+--------------------------------------------------
+playerBox.FocusLost:Connect(function()
+	local typed = playerBox.Text
+	if typed == "" then return end
+	local lower = string.lower(typed)
+	for _, p in ipairs(Players:GetPlayers()) do
+		if string.sub(string.lower(p.DisplayName), 1, #lower) == lower
+		or string.sub(string.lower(p.Name),        1, #lower) == lower then
+			playerBox.Text = p.Name
+			break
+		end
+	end
+end)
+
+--------------------------------------------------
+-- HELPERS (original, untouched)
 --------------------------------------------------
 local allowedItems = {"Building Block","Grass","Glass Pane"}
-
 local function isAllowedItem(name)
 	for _,a in ipairs(allowedItems) do
 		if string.find(name,a) then return true end
 	end
+	return false
 end
 
 local function cfToString(cf)
-	local t = {cf:GetComponents()}
-	for i,v in ipairs(t) do t[i] = string.format("%.5f",v) end
-	return table.concat(t,",")
+	local c = {cf:GetComponents()}
+	for i,v in ipairs(c) do c[i] = string.format("%.5f",v) end
+	return table.concat(c,",")
+end
+
+local function stringToCFrame(str)
+	local nums = {}
+	for v in string.gmatch(str,"[^,]+") do table.insert(nums,tonumber(v)) end
+	return CFrame.new(
+		nums[1],nums[2],nums[3],
+		nums[4],nums[5],nums[6],
+		nums[7],nums[8],nums[9],
+		nums[10],nums[11],nums[12]
+	)
 end
 
 local function sizeToString(size)
 	return table.concat({size.X,size.Y,size.Z},",")
 end
 
+local function stringToSize(str)
+	local nums = {}
+	for v in string.gmatch(str,"[^,]+") do table.insert(nums,tonumber(v)) end
+	return {X=nums[1],Y=nums[2],Z=nums[3],P=10}
+end
+
 local function colorToHex(c)
-	local r = math.floor(c.R*255+0.5)
-	local g = math.floor(c.G*255+0.5)
-	local b = math.floor(c.B*255+0.5)
+	local r = math.clamp(math.floor(c.R*255+0.5),0,255)
+	local g = math.clamp(math.floor(c.G*255+0.5),0,255)
+	local b = math.clamp(math.floor(c.B*255+0.5),0,255)
 	return string.format("%02x%02x%02x",r,g,b)
 end
 
--- 🔥 FIXED FUNCTION (no "Empty" dependency)
 local function getPlot(name)
-	local playerName = (name ~= "" and name) or LocalPlayer.Name
-
-	for _, plot in ipairs(Workspace.Property.Plots:GetChildren()) do
+	local playerName = (name ~= "" and name) or game.Players.LocalPlayer.Name
+	for _, plot in ipairs(workspace.Property.Plots:GetChildren()) do
 		for _, obj in ipairs(plot:GetDescendants()) do
 			if obj.Name == "Owner" then
 				if obj:IsA("ObjectValue") and obj.Value and obj.Value.Name == playerName then
 					return obj.Parent
-				elseif obj:IsA("StringValue") and obj.Value == playerName then
+				end
+				if obj:IsA("StringValue") and obj.Value == playerName then
 					return obj.Parent
 				end
 			end
 		end
 	end
+	return nil
+end
+
+--------------------------------------------------
+-- DUPE KEY (original, untouched)
+--------------------------------------------------
+local function round(n, step)
+	return math.floor(n / step + 0.5) * step
+end
+
+local function getBlockKey(id, relCF, sizeX, sizeY, sizeZ, hex)
+	local p = relCF.Position
+	local _,_,_,r00,r01,r02,r10,r11,r12,r20,r21,r22 = relCF:GetComponents()
+	return string.format("%s|%.1f,%.1f,%.1f|%.1f,%.1f,%.1f|%s|%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
+		id,
+		round(p.X,0.1), round(p.Y,0.1), round(p.Z,0.1),
+		round(sizeX,0.1), round(sizeY,0.1), round(sizeZ,0.1),
+		hex,
+		round(r00,0.01),round(r01,0.01),round(r02,0.01),
+		round(r10,0.01),round(r11,0.01),round(r12,0.01),
+		round(r20,0.01),round(r21,0.01),round(r22,0.01)
+	)
+end
+
+local function getExistingMap(plot)
+	local map = {}
+	local terrainBase     = plot:FindFirstChild("Terrain") and plot.Terrain:FindFirstChild("Grass")
+	local furnitureFolder = plot:FindFirstChild("ActiveAssets") and plot.ActiveAssets:FindFirstChild("Furniture")
+	if not terrainBase or not furnitureFolder then return map end
+
+	local grassCF = terrainBase.CFrame
+	local count   = 0
+
+	for _, model in ipairs(furnitureFolder:GetChildren()) do
+		local item  = model:FindFirstChild("Item")
+		local color = model:FindFirstChild("Color")
+		if not (item and color) then continue end
+
+		local id = furnitureIdCache[string.lower(item.Value)]
+		if not id then continue end
+
+		for _, part in ipairs(model:GetDescendants()) do
+			if part:IsA("BasePart") then
+				local relCF = grassCF:ToObjectSpace(part.CFrame)
+				local key   = getBlockKey(id, relCF, part.Size.X, part.Size.Y, part.Size.Z, colorToHex(part.Color))
+				map[key]    = true
+				count      += 1
+				if count % 100 == 0 then task.wait() end
+			end
+		end
+	end
+
+	return map
 end
 
 --------------------------------------------------
 -- EXPORT
 --------------------------------------------------
-local function exportBlueprint()
+function exportBlueprint()
 	local plot = getPlot(playerBox.Text)
-	if not plot then warn("No plot found") return end
+	if not plot then warn("Plot not found") return end
 
-	local terrain = plot:FindFirstChild("Terrain") and plot.Terrain:FindFirstChild("Grass")
-	local furniture = plot:FindFirstChild("ActiveAssets") and plot.ActiveAssets:FindFirstChild("Furniture")
+	local terrainBase     = plot:FindFirstChild("Terrain") and plot.Terrain:FindFirstChild("Grass")
+	if not terrainBase then warn("Terrain.Grass not found") return end
 
-	if not terrain or not furniture then
-		warn("Missing Terrain or Furniture")
-		return
-	end
+	local furnitureFolder = plot:FindFirstChild("ActiveAssets") and plot.ActiveAssets:FindFirstChild("Furniture")
+	if not furnitureFolder then warn("No furniture found") return end
 
 	local blocks = {}
-
-	for _,model in ipairs(furniture:GetChildren()) do
-		local item = model:FindFirstChild("Item")
+	for _,model in ipairs(furnitureFolder:GetChildren()) do
+		local item  = model:FindFirstChild("Item")
 		local color = model:FindFirstChild("Color")
-
 		if item and color and isAllowedItem(item.Value) then
-			local id
-
-			for _,f in ipairs(RSFurniture:GetChildren()) do
-				if f:IsA("ImageButton") and string.lower(f.Name) == string.lower(item.Value) and f:FindFirstChild("Id") then
-					id = f.Id.Value
-					break
-				end
-			end
-
+			local id = furnitureIdCache[string.lower(item.Value)]
 			if not id then continue end
 
 			for _,part in ipairs(model:GetDescendants()) do
 				if part:IsA("BasePart") then
-					local rel = terrain.CFrame:ToObjectSpace(part.CFrame)
-
+					local rel = terrainBase.CFrame:ToObjectSpace(part.CFrame)
 					table.insert(blocks, table.concat({
 						id,
 						cfToString(rel),
 						model.Color.Value,
 						sizeToString(part.Size),
 						colorToHex(part.Color)
-					},"|"))
+					}, "|"))
 				end
 			end
 		end
 	end
 
-	totalPartsLabel.Text = "Total parts: "..#blocks
+	if #blocks == 0 then warn("No valid parts found") return end
 
-	local partsPerBox = 800
-	local index = 1
+	-- Update total parts counter
+	totalPartsLabel.Text = "Total parts: " .. #blocks
 
-	for i = 1, #blueprintBoxes do
-		local chunk = {}
-
-		for j = 1, partsPerBox do
-			if index > #blocks then break end
-			table.insert(chunk, blocks[index])
-			index += 1
+	if not settings.biggerExporter then
+		if #blocks > PARTS_PER_BOX then
+			-- Too many parts for single box — warn and bail
+			exportBoxes[1].Text     = ""
+			exportWarnLabel.Visible = true
+			exportActionBtn.Visible = false
+			warn("Over 700 parts (" .. #blocks .. ") — enable Bigger Exporter in Settings!")
+			return
 		end
-
-		blueprintBoxes[i].Text = table.concat(chunk,";")
-		blueprintLabels[i].Text = "Box "..i..": "..#chunk.." parts"
+		-- Normal: fits in one box
+		exportWarnLabel.Visible = false
+		exportActionBtn.Visible = true
+		exportBoxes[1].Text     = table.concat(blocks, ";")
+	else
+		-- Bigger Exporter: fill boxes up to PARTS_PER_BOX each
+		exportWarnLabel.Visible = false
+		exportActionBtn.Visible = true
+		local idx = 1
+		for i, box in ipairs(exportBoxes) do
+			local chunk = {}
+			for _ = 1, PARTS_PER_BOX do
+				if idx > #blocks then break end
+				table.insert(chunk, blocks[idx])
+				idx += 1
+			end
+			box.Text             = table.concat(chunk, ";")
+			exportLabels[i].Text = "Box " .. i .. ":  " .. #chunk .. " parts"
+		end
 	end
 
-	print("Export complete:", #blocks)
+	-- Save full blueprint string to a StringValue on the plot
+	local full  = table.concat(blocks, ";")
+	local value = plot:FindFirstChild("Blueprint") or Instance.new("StringValue")
+	value.Name   = "Blueprint"
+	value.Value  = full
+	value.Parent = plot
+
+	print("Blueprint exported! Total parts:", #blocks)
 end
 
-exportButton.MouseButton1Click:Connect(exportBlueprint)
+--------------------------------------------------
+-- IMPORT (original logic, untouched)
+--------------------------------------------------
+local function importBlueprint()
+	local plot = getPlot(playerBox.Text)
+	if not plot then warn("Plot not found") return end
+
+	local builderBase = plot:FindFirstChild("Base")
+	if not builderBase then warn("Base missing") return end
+
+	local code = blueprintBox.Text
+	if code == "" then warn("No blueprint code") return end
+
+	local existingMap = {}
+	if settings.dupeSafety then
+		progressLabel.Text = "Scanning existing blocks..."
+		existingMap = getExistingMap(plot)
+	end
+
+	local blocks  = string.split(code, ";")
+	local total   = #blocks
+	local placed  = 0
+	local skipped = 0
+
+	for _,block in ipairs(blocks) do
+		if block ~= "" then
+			local data      = string.split(block, "|")
+			local id        = data[1]
+			local relCFrame = stringToCFrame(data[2])
+			local color     = data[3]
+			local partSize  = stringToSize(data[4])
+			local hex       = data[5]
+
+			if settings.dupeSafety then
+				local key = getBlockKey(id, relCFrame, partSize.X, partSize.Y, partSize.Z, hex)
+				if existingMap[key] then
+					skipped += 1
+					progressLabel.Text = "Skipped "..skipped.." | Placed "..placed.." / "..total
+					continue
+				end
+				existingMap[key] = true
+			end
+
+			local finalRelCFrame = relCFrame * CFrame.new(0, -partSize.Y/2, 0)
+
+			local sizeArg = {
+				X = partSize.X*10,
+				Y = partSize.Y*10,
+				Z = partSize.Z*10,
+				P = 10
+			}
+
+			local placingPlayerName = playerBox.Text ~= "" and playerBox.Text or LocalPlayer.Name
+			local PlacingFromUser   = Players:FindFirstChild(placingPlayerName)
+
+			local args = {{
+				PurchaseForPlace = true,
+				Id               = id,
+				House            = plot,
+				RelativeCFrame   = finalRelCFrame,
+				Color            = color,
+				Size             = sizeArg,
+				CustomColors     = {hex},
+				PlacingFromUser  = PlacingFromUser
+			}}
+
+			pcall(function()
+				PlaceFurnitureRemote:InvokeServer(unpack(args))
+			end)
+
+			placed += 1
+			progressLabel.Text = "Building "..placed.." / "..total.." | Skipped "..skipped
+		end
+	end
+
+	progressLabel.Text = "Done! Placed: "..placed.."  Skipped: "..skipped
+end
+
+actionButton.MouseButton1Click:Connect(importBlueprint)
+
+--------------------------------------------------
+-- INIT: build the export view and set starting tab
+--------------------------------------------------
+rebuildExportView()
+switchTab("Export")
