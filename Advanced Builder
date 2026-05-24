@@ -26,375 +26,616 @@ end)
 -- SETTINGS STATE
 --------------------------------------------------
 local settings = {
-	dupeSafety    = true,   -- ON by default
-	biggerExporter = false, -- OFF by default
+	dupeSafety     = true,
+	biggerExporter = false,
 }
 
 local PARTS_PER_BOX = 700
-local MAX_BOXES     = 9   -- 9 x 700 = 6300, covers max plot size
+local MAX_BOXES     = 9
 
 --------------------------------------------------
--- GUI: MAIN FRAME
+-- IMPORT STATE
+--------------------------------------------------
+local importPaused  = false
+local importRunning = false
+
+--------------------------------------------------
+-- COLOR PALETTE
+--------------------------------------------------
+local C = {
+	bg         = Color3.fromRGB(22, 22, 28),
+	panel      = Color3.fromRGB(30, 30, 38),
+	card       = Color3.fromRGB(38, 38, 48),
+	input      = Color3.fromRGB(28, 28, 36),
+	accent     = Color3.fromRGB(80, 130, 220),
+	accentHov  = Color3.fromRGB(100, 150, 240),
+	danger     = Color3.fromRGB(200, 70, 70),
+	success    = Color3.fromRGB(60, 170, 90),
+	warn       = Color3.fromRGB(200, 140, 40),
+	pause      = Color3.fromRGB(180, 130, 40),
+	resume     = Color3.fromRGB(60, 160, 100),
+	tabActive  = Color3.fromRGB(80, 130, 220),
+	tabInact   = Color3.fromRGB(42, 42, 54),
+	text       = Color3.new(1, 1, 1),
+	textMuted  = Color3.fromRGB(160, 160, 175),
+	border     = Color3.fromRGB(55, 55, 70),
+}
+
+--------------------------------------------------
+-- GUI ROOT
 --------------------------------------------------
 local gui = Instance.new("ScreenGui")
-gui.Name = "BlueprintManager"
-gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+gui.Name               = "BlueprintManager"
+gui.ResetOnSpawn       = false
+gui.Parent             = LocalPlayer:WaitForChild("PlayerGui")
 
 local frame = Instance.new("Frame")
 frame.Name             = "MainFrame"
-frame.Size             = UDim2.new(0,450,0,350)
-frame.Position         = UDim2.new(0.5,-225,0.5,-175)
-frame.BackgroundColor3 = Color3.fromRGB(40,40,45)
+frame.Size             = UDim2.new(0, 460, 0, 390)
+frame.Position         = UDim2.new(0.5, -230, 0.5, -195)
+frame.BackgroundColor3 = C.bg
 frame.Active           = true
 frame.Draggable        = true
+frame.BorderSizePixel  = 0
 frame.Parent           = gui
 
--- Title bar
-local title = Instance.new("TextLabel")
-title.Size             = UDim2.new(1,-30,0,30)
-title.BackgroundColor3 = Color3.fromRGB(30,30,35)
-title.Text             = "Blueprint Manager"
-title.TextColor3       = Color3.new(1,1,1)
-title.Font             = Enum.Font.SourceSansBold
-title.TextScaled       = true
-title.Parent           = frame
+-- Outer border via UIStroke
+local outerStroke = Instance.new("UIStroke")
+outerStroke.Color     = C.border
+outerStroke.Thickness = 1
+outerStroke.Parent    = frame
 
--- Settings gear button (top-right of title bar)
+local frameCorner = Instance.new("UICorner")
+frameCorner.CornerRadius = UDim.new(0, 8)
+frameCorner.Parent       = frame
+
+--------------------------------------------------
+-- TITLE BAR
+--------------------------------------------------
+local titleBar = Instance.new("Frame")
+titleBar.Size             = UDim2.new(1, 0, 0, 38)
+titleBar.BackgroundColor3 = C.panel
+titleBar.BorderSizePixel  = 0
+titleBar.Parent           = frame
+
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 8)
+titleCorner.Parent       = titleBar
+
+-- Bottom fill to square off the bottom of title bar
+local titleFill = Instance.new("Frame")
+titleFill.Size             = UDim2.new(1, 0, 0, 8)
+titleFill.Position         = UDim2.new(0, 0, 1, -8)
+titleFill.BackgroundColor3 = C.panel
+titleFill.BorderSizePixel  = 0
+titleFill.Parent           = titleBar
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size               = UDim2.new(1, -80, 1, 0)
+titleLabel.Position           = UDim2.new(0, 14, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text               = "Blueprint Manager"
+titleLabel.TextColor3         = C.text
+titleLabel.Font               = Enum.Font.GothamBold
+titleLabel.TextSize           = 15
+titleLabel.TextXAlignment     = Enum.TextXAlignment.Left
+titleLabel.Parent             = titleBar
+
+-- Settings gear button
 local settingsBtn = Instance.new("TextButton")
-settingsBtn.Size             = UDim2.new(0,30,0,30)
-settingsBtn.Position         = UDim2.new(1,-30,0,0)
-settingsBtn.BackgroundColor3 = Color3.fromRGB(30,30,35)
+settingsBtn.Size             = UDim2.new(0, 32, 0, 28)
+settingsBtn.Position         = UDim2.new(1, -70, 0, 5)
+settingsBtn.BackgroundColor3 = C.card
 settingsBtn.Text             = "⚙"
-settingsBtn.TextColor3       = Color3.new(1,1,1)
-settingsBtn.Font             = Enum.Font.SourceSansBold
-settingsBtn.TextScaled       = true
+settingsBtn.TextColor3       = C.textMuted
+settingsBtn.Font             = Enum.Font.GothamBold
+settingsBtn.TextSize         = 16
 settingsBtn.BorderSizePixel  = 0
-settingsBtn.Parent           = frame
+settingsBtn.Parent           = titleBar
+Instance.new("UICorner").CornerRadius = UDim.new(0,5)
+Instance.new("UICorner", settingsBtn).CornerRadius = UDim.new(0, 5)
 
--- Tabs
+-- Minimize button
+local minimizeBtn = Instance.new("TextButton")
+minimizeBtn.Size             = UDim2.new(0, 32, 0, 28)
+minimizeBtn.Position         = UDim2.new(1, -36, 0, 5)
+minimizeBtn.BackgroundColor3 = C.card
+minimizeBtn.Text             = "—"
+minimizeBtn.TextColor3       = C.textMuted
+minimizeBtn.Font             = Enum.Font.GothamBold
+minimizeBtn.TextSize         = 14
+minimizeBtn.BorderSizePixel  = 0
+minimizeBtn.Parent           = titleBar
+Instance.new("UICorner", minimizeBtn).CornerRadius = UDim.new(0, 5)
+
+--------------------------------------------------
+-- TAB BAR
+--------------------------------------------------
+local tabBar = Instance.new("Frame")
+tabBar.Size             = UDim2.new(1, -20, 0, 32)
+tabBar.Position         = UDim2.new(0, 10, 0, 44)
+tabBar.BackgroundColor3 = C.panel
+tabBar.BorderSizePixel  = 0
+tabBar.Parent           = frame
+Instance.new("UICorner", tabBar).CornerRadius = UDim.new(0, 6)
+
 local exportTab = Instance.new("TextButton")
-exportTab.Size             = UDim2.new(0,100,0,25)
-exportTab.Position         = UDim2.new(0,10,0,35)
+exportTab.Size             = UDim2.new(0.5, -3, 1, -6)
+exportTab.Position         = UDim2.new(0, 3, 0, 3)
+exportTab.BackgroundColor3 = C.tabActive
 exportTab.Text             = "Export"
-exportTab.BackgroundColor3 = Color3.fromRGB(70,120,180)
-exportTab.TextColor3       = Color3.new(1,1,1)
-exportTab.Font             = Enum.Font.SourceSansBold
-exportTab.TextScaled       = true
+exportTab.TextColor3       = C.text
+exportTab.Font             = Enum.Font.GothamBold
+exportTab.TextSize         = 13
 exportTab.BorderSizePixel  = 0
-exportTab.Parent           = frame
+exportTab.Parent           = tabBar
+Instance.new("UICorner", exportTab).CornerRadius = UDim.new(0, 5)
 
 local importTab = Instance.new("TextButton")
-importTab.Size             = UDim2.new(0,100,0,25)
-importTab.Position         = UDim2.new(0,120,0,35)
+importTab.Size             = UDim2.new(0.5, -3, 1, -6)
+importTab.Position         = UDim2.new(0.5, 0, 0, 3)
+importTab.BackgroundColor3 = C.tabInact
 importTab.Text             = "Import"
-importTab.BackgroundColor3 = Color3.fromRGB(100,100,100)
-importTab.TextColor3       = Color3.new(1,1,1)
-importTab.Font             = Enum.Font.SourceSansBold
-importTab.TextScaled       = true
+importTab.TextColor3       = C.textMuted
+importTab.Font             = Enum.Font.GothamBold
+importTab.TextSize         = 13
 importTab.BorderSizePixel  = 0
-importTab.Parent           = frame
+importTab.Parent           = tabBar
+Instance.new("UICorner", importTab).CornerRadius = UDim.new(0, 5)
 
--- Content area (holds both export and import views)
+--------------------------------------------------
+-- PLAYER NAME ROW
+--------------------------------------------------
+local playerRow = Instance.new("Frame")
+playerRow.Size             = UDim2.new(1, -20, 0, 30)
+playerRow.Position         = UDim2.new(0, 10, 0, 82)
+playerRow.BackgroundTransparency = 1
+playerRow.Parent           = frame
+
+local playerIcon = Instance.new("TextLabel")
+playerIcon.Size               = UDim2.new(0, 22, 1, 0)
+playerIcon.BackgroundTransparency = 1
+playerIcon.Text               = "👤"
+playerIcon.TextSize           = 14
+playerIcon.Font               = Enum.Font.Gotham
+playerIcon.TextColor3         = C.textMuted
+playerIcon.Parent             = playerRow
+
+local playerBox = Instance.new("TextBox")
+playerBox.Size             = UDim2.new(1, -26, 1, 0)
+playerBox.Position         = UDim2.new(0, 26, 0, 0)
+playerBox.Text = ""
+playerBox.PlaceholderText  = "Player name  (blank = yourself)"
+playerBox.BackgroundColor3 = C.input
+playerBox.TextColor3       = C.text
+playerBox.PlaceholderColor3 = C.textMuted
+playerBox.Font             = Enum.Font.Gotham
+playerBox.TextSize         = 13
+playerBox.BorderSizePixel  = 0
+playerBox.ClearTextOnFocus = false
+playerBox.Parent           = playerRow
+Instance.new("UICorner", playerBox).CornerRadius = UDim.new(0, 5)
+local pbPad = Instance.new("UIPadding", playerBox)
+pbPad.PaddingLeft = UDim.new(0, 8)
+
+--------------------------------------------------
+-- CONTENT AREA
+--------------------------------------------------
+local contentY   = 118
+local contentH   = 390 - contentY - 10  -- 262
+
 local contentFrame = Instance.new("Frame")
-contentFrame.Size               = UDim2.new(1,-20,0,260)
-contentFrame.Position           = UDim2.new(0,10,0,70)
+contentFrame.Size               = UDim2.new(1, -20, 0, contentH)
+contentFrame.Position           = UDim2.new(0, 10, 0, contentY)
 contentFrame.BackgroundTransparency = 1
 contentFrame.ClipsDescendants   = true
 contentFrame.Parent             = frame
 
--- Shared player name box (visible in both tabs)
-local playerBox = Instance.new("TextBox")
-playerBox.Size             = UDim2.new(0,200,0,25)
-playerBox.Position         = UDim2.new(0,0,0,0)
-playerBox.PlaceholderText  = "Player Name (leave blank for self)"
-playerBox.BackgroundColor3 = Color3.fromRGB(50,50,55)
-playerBox.TextColor3       = Color3.new(1,1,1)
-playerBox.BorderSizePixel  = 0
-playerBox.ClearTextOnFocus = false
-playerBox.Parent           = contentFrame
-
 --------------------------------------------------
--- EXPORT VIEW
--- exportView holds everything below the playerBox for the Export tab.
--- Rebuilt by rebuildExportView() whenever Bigger Exporter is toggled.
+-- ===== EXPORT VIEW =====
 --------------------------------------------------
-local exportView       -- rebuilt on toggle
+local exportView
 local exportBoxes  = {}
 local exportLabels = {}
 local totalPartsLabel
 
--- The Export button always lives here, outside exportView, so it
--- is never clipped regardless of scroll height.
-local exportActionBtn = Instance.new("TextButton")
-exportActionBtn.Size             = UDim2.new(0,150,0,28)
-exportActionBtn.Position         = UDim2.new(0,0,0,228)
-exportActionBtn.BackgroundColor3 = Color3.fromRGB(70,120,180)
-exportActionBtn.TextColor3       = Color3.new(1,1,1)
-exportActionBtn.Font             = Enum.Font.SourceSansBold
-exportActionBtn.TextScaled       = true
-exportActionBtn.Text             = "Export Blueprint"
-exportActionBtn.BorderSizePixel  = 0
-exportActionBtn.Parent           = contentFrame
-exportActionBtn.MouseButton1Click:Connect(function() exportBlueprint() end)
+-- Bottom action bar (always docked at bottom of contentFrame)
+local exportActionBar = Instance.new("Frame")
+exportActionBar.Size             = UDim2.new(1, 0, 0, 36)
+exportActionBar.Position         = UDim2.new(0, 0, 1, -36)
+exportActionBar.BackgroundColor3 = C.bg
+exportActionBar.BorderSizePixel  = 0
+exportActionBar.Parent           = contentFrame
 
--- Warning label shown when >700 parts but Bigger Exporter is OFF
+local exportActionBtn = Instance.new("TextButton")
+exportActionBtn.Size             = UDim2.new(0, 170, 0, 30)
+exportActionBtn.Position         = UDim2.new(0, 0, 0, 3)
+exportActionBtn.BackgroundColor3 = C.accent
+exportActionBtn.TextColor3       = C.text
+exportActionBtn.Font             = Enum.Font.GothamBold
+exportActionBtn.TextSize         = 13
+exportActionBtn.Text             = "⬆  Export Blueprint"
+exportActionBtn.BorderSizePixel  = 0
+exportActionBtn.Parent           = exportActionBar
+Instance.new("UICorner", exportActionBtn).CornerRadius = UDim.new(0, 6)
+
 local exportWarnLabel = Instance.new("TextLabel")
-exportWarnLabel.Size               = UDim2.new(1,0,0,28)
-exportWarnLabel.Position           = UDim2.new(0,0,0,228)
-exportWarnLabel.BackgroundColor3   = Color3.fromRGB(160,80,20)
-exportWarnLabel.TextColor3         = Color3.new(1,1,1)
-exportWarnLabel.Font               = Enum.Font.SourceSansBold
-exportWarnLabel.TextScaled         = true
-exportWarnLabel.Text               = "⚠ Over 700 parts — enable Bigger Exporter in Settings!"
+exportWarnLabel.Size               = UDim2.new(1, -180, 0, 30)
+exportWarnLabel.Position           = UDim2.new(0, 178, 0, 3)
+exportWarnLabel.BackgroundColor3   = Color3.fromRGB(80, 50, 20)
+exportWarnLabel.TextColor3         = Color3.fromRGB(255, 200, 100)
+exportWarnLabel.Font               = Enum.Font.Gotham
+exportWarnLabel.TextSize           = 11
+exportWarnLabel.TextWrapped        = true
+exportWarnLabel.Text               = "⚠  Over 700 parts — enable Bigger Exporter in Settings"
 exportWarnLabel.BorderSizePixel    = 0
 exportWarnLabel.Visible            = false
-exportWarnLabel.Parent             = contentFrame
+exportWarnLabel.Parent             = exportActionBar
+Instance.new("UICorner", exportWarnLabel).CornerRadius = UDim.new(0, 6)
+local warnPad = Instance.new("UIPadding", exportWarnLabel)
+warnPad.PaddingLeft  = UDim.new(0, 6)
+warnPad.PaddingRight = UDim.new(0, 6)
+
+local function makeTextBox(parent, h, yPos)
+	local box = Instance.new("TextBox")
+	box.Size             = UDim2.new(1, 0, 0, h)
+	box.Position         = UDim2.new(0, 0, 0, yPos)
+	box.BackgroundColor3 = C.input
+	box.TextColor3       = C.text
+	box.TextWrapped      = true
+	box.MultiLine        = true
+	box.ClearTextOnFocus = false
+	box.BorderSizePixel  = 0
+	box.Font             = Enum.Font.Code
+	box.TextSize         = 11
+	box.Text             = ""
+	box.Parent           = parent
+	Instance.new("UICorner", box).CornerRadius = UDim.new(0, 5)
+	local p = Instance.new("UIPadding", box)
+	p.PaddingLeft = UDim.new(0, 6); p.PaddingRight = UDim.new(0, 6)
+	p.PaddingTop  = UDim.new(0, 4); p.PaddingBottom = UDim.new(0, 4)
+	return box
+end
 
 local function rebuildExportView()
 	if exportView then exportView:Destroy() end
 	exportBoxes  = {}
 	exportLabels = {}
 	exportWarnLabel.Visible = false
-	exportActionBtn.Visible = true
+
+	-- scrollable area above the action bar
+	local scrollH = contentH - 40
 
 	exportView = Instance.new("Frame")
-	exportView.Size               = UDim2.new(1,0,0,224)
-	exportView.Position           = UDim2.new(0,0,0,30)
+	exportView.Size               = UDim2.new(1, 0, 0, scrollH)
+	exportView.Position           = UDim2.new(0, 0, 0, 0)
 	exportView.BackgroundTransparency = 1
 	exportView.Parent             = contentFrame
 
-	-- Total parts counter (top-right of export view, always visible)
+	-- Header row: label + total counter
+	local headerRow = Instance.new("Frame")
+	headerRow.Size             = UDim2.new(1, 0, 0, 22)
+	headerRow.BackgroundTransparency = 1
+	headerRow.Parent           = exportView
+
+	local boxLabel = Instance.new("TextLabel")
+	boxLabel.Size               = UDim2.new(0.5, 0, 1, 0)
+	boxLabel.BackgroundTransparency = 1
+	boxLabel.Text               = settings.biggerExporter and "Export Boxes" or "Blueprint Code"
+	boxLabel.TextColor3         = C.textMuted
+	boxLabel.Font               = Enum.Font.GothamBold
+	boxLabel.TextSize           = 12
+	boxLabel.TextXAlignment     = Enum.TextXAlignment.Left
+	boxLabel.Parent             = headerRow
+
 	totalPartsLabel = Instance.new("TextLabel")
-	totalPartsLabel.Size               = UDim2.new(0,200,0,22)
-	totalPartsLabel.Position           = UDim2.new(0,210,0,0)
+	totalPartsLabel.Size               = UDim2.new(0.5, 0, 1, 0)
+	totalPartsLabel.Position           = UDim2.new(0.5, 0, 0, 0)
 	totalPartsLabel.BackgroundTransparency = 1
-	totalPartsLabel.TextColor3         = Color3.new(0.7,0.7,0.7)
-	totalPartsLabel.Font               = Enum.Font.SourceSans
-	totalPartsLabel.TextScaled         = true
+	totalPartsLabel.TextColor3         = C.textMuted
+	totalPartsLabel.Font               = Enum.Font.Gotham
+	totalPartsLabel.TextSize           = 12
 	totalPartsLabel.Text               = "Total parts: —"
 	totalPartsLabel.TextXAlignment     = Enum.TextXAlignment.Right
-	totalPartsLabel.Parent             = exportView
+	totalPartsLabel.Parent             = headerRow
 
 	if not settings.biggerExporter then
-		-- NORMAL MODE: single blueprint box
-		local box = Instance.new("TextBox")
-		box.Size             = UDim2.new(1,0,0,190)
-		box.Position         = UDim2.new(0,0,0,28)
-		box.BackgroundColor3 = Color3.fromRGB(50,50,55)
-		box.TextColor3       = Color3.new(1,1,1)
-		box.TextWrapped      = true
-		box.MultiLine        = true
-		box.ClearTextOnFocus = false
-		box.BorderSizePixel  = 0
-		box.Text             = ""
-		box.Parent           = exportView
-
-		table.insert(exportBoxes,  box)
+		-- NORMAL: single box
+		local box = makeTextBox(exportView, scrollH - 26, 26)
+		table.insert(exportBoxes, box)
 		table.insert(exportLabels, totalPartsLabel)
-
 	else
-		-- BIGGER EXPORTER MODE: scrolling frame, MAX_BOXES boxes of 700 parts each
+		-- BIGGER: scrolling multi-box
 		local scroll = Instance.new("ScrollingFrame")
-		scroll.Size                 = UDim2.new(1,0,0,190)
-		scroll.Position             = UDim2.new(0,0,0,28)
+		scroll.Size                 = UDim2.new(1, 0, 0, scrollH - 26)
+		scroll.Position             = UDim2.new(0, 0, 0, 26)
 		scroll.BackgroundTransparency = 1
-		scroll.ScrollBarThickness   = 6
-		scroll.ScrollBarImageColor3 = Color3.fromRGB(100,100,110)
+		scroll.ScrollBarThickness   = 4
+		scroll.ScrollBarImageColor3 = C.border
 		scroll.BorderSizePixel      = 0
 		scroll.Parent               = exportView
 
-		local BOX_H   = 75
+		local BOX_H   = 72
 		local LABEL_H = 20
-		local GAP     = 4
-		local cy      = 0
+		local GAP     = 8
+		local cy      = 4
 
 		for i = 1, MAX_BOXES do
+			local rowBg = Instance.new("Frame")
+			rowBg.Size             = UDim2.new(1, -4, 0, LABEL_H + BOX_H + 6)
+			rowBg.Position         = UDim2.new(0, 0, 0, cy)
+			rowBg.BackgroundColor3 = C.card
+			rowBg.BorderSizePixel  = 0
+			rowBg.Parent           = scroll
+			Instance.new("UICorner", rowBg).CornerRadius = UDim.new(0, 6)
+
 			local lbl = Instance.new("TextLabel")
-			lbl.Size             = UDim2.new(1,-8,0,LABEL_H)
-			lbl.Position         = UDim2.new(0,0,0,cy)
-			lbl.BackgroundColor3 = Color3.fromRGB(35,35,42)
-			lbl.TextColor3       = Color3.new(0.8,0.8,0.8)
-			lbl.Font             = Enum.Font.SourceSansBold
-			lbl.TextScaled       = true
-			lbl.Text             = "Box "..i..":  0 parts"
-			lbl.BorderSizePixel  = 0
-			lbl.Parent           = scroll
-			cy += LABEL_H
+			lbl.Size             = UDim2.new(1, -10, 0, LABEL_H)
+			lbl.Position         = UDim2.new(0, 8, 0, 3)
+			lbl.BackgroundTransparency = 1
+			lbl.TextColor3       = C.textMuted
+			lbl.Font             = Enum.Font.GothamBold
+			lbl.TextSize         = 11
+			lbl.Text             = "Box " .. i .. " — 0 parts"
+			lbl.TextXAlignment   = Enum.TextXAlignment.Left
+			lbl.Parent           = rowBg
 
 			local box = Instance.new("TextBox")
-			box.Size             = UDim2.new(1,-8,0,BOX_H)
-			box.Position         = UDim2.new(0,0,0,cy)
-			box.BackgroundColor3 = Color3.fromRGB(50,50,55)
-			box.TextColor3       = Color3.new(1,1,1)
+			box.Size             = UDim2.new(1, -10, 0, BOX_H)
+			box.Position         = UDim2.new(0, 5, 0, LABEL_H + 4)
+			box.BackgroundColor3 = C.input
+			box.TextColor3       = C.text
 			box.TextWrapped      = true
 			box.MultiLine        = true
 			box.ClearTextOnFocus = false
 			box.BorderSizePixel  = 0
+			box.Font             = Enum.Font.Code
+			box.TextSize         = 10
 			box.Text             = ""
-			box.Parent           = scroll
-			cy += BOX_H + GAP
+			box.Parent           = rowBg
+			Instance.new("UICorner", box).CornerRadius = UDim.new(0, 4)
+			local bp = Instance.new("UIPadding", box)
+			bp.PaddingLeft = UDim.new(0, 5); bp.PaddingRight = UDim.new(0, 5)
+			bp.PaddingTop  = UDim.new(0, 3); bp.PaddingBottom = UDim.new(0, 3)
+
+			cy += LABEL_H + BOX_H + 6 + GAP
 
 			table.insert(exportBoxes,  box)
 			table.insert(exportLabels, lbl)
 		end
-
-		scroll.CanvasSize = UDim2.new(0,0,0,cy)
+		scroll.CanvasSize = UDim2.new(0, 0, 0, cy)
 	end
 end
 
+exportActionBtn.MouseButton1Click:Connect(function() exportBlueprint() end)
+
 --------------------------------------------------
--- IMPORT VIEW (static, never rebuilt)
+-- ===== IMPORT VIEW =====
 --------------------------------------------------
 local importView = Instance.new("Frame")
-importView.Size               = UDim2.new(1,0,0,235)
-importView.Position           = UDim2.new(0,0,0,30)
+importView.Size               = UDim2.new(1, 0, 1, 0)
 importView.BackgroundTransparency = 1
 importView.Visible            = false
 importView.Parent             = contentFrame
 
+local bpHeaderLabel = Instance.new("TextLabel")
+bpHeaderLabel.Size               = UDim2.new(1, 0, 0, 18)
+bpHeaderLabel.BackgroundTransparency = 1
+bpHeaderLabel.Text               = "Blueprint Code"
+bpHeaderLabel.TextColor3         = C.textMuted
+bpHeaderLabel.Font               = Enum.Font.GothamBold
+bpHeaderLabel.TextSize           = 12
+bpHeaderLabel.TextXAlignment     = Enum.TextXAlignment.Left
+bpHeaderLabel.Parent             = importView
+
 local blueprintBox = Instance.new("TextBox")
-blueprintBox.Size             = UDim2.new(1,0,0,175)
-blueprintBox.Position         = UDim2.new(0,0,0,0)
-blueprintBox.BackgroundColor3 = Color3.fromRGB(50,50,55)
-blueprintBox.TextColor3       = Color3.new(1,1,1)
+blueprintBox.Size             = UDim2.new(1, 0, 0, contentH - 92)
+blueprintBox.Position         = UDim2.new(0, 0, 0, 22)
+blueprintBox.BackgroundColor3 = C.input
+blueprintBox.TextColor3       = C.text
+blueprintBox.PlaceholderText  = "Paste blueprint code here…"
+blueprintBox.PlaceholderColor3 = C.textMuted
 blueprintBox.TextWrapped      = true
 blueprintBox.MultiLine        = true
 blueprintBox.ClearTextOnFocus = false
 blueprintBox.BorderSizePixel  = 0
+blueprintBox.Font             = Enum.Font.Code
+blueprintBox.TextSize         = 11
+blueprintBox.Text             = ""
 blueprintBox.Parent           = importView
+Instance.new("UICorner", blueprintBox).CornerRadius = UDim.new(0, 5)
+local bpPad = Instance.new("UIPadding", blueprintBox)
+bpPad.PaddingLeft = UDim.new(0, 8); bpPad.PaddingRight = UDim.new(0, 8)
+bpPad.PaddingTop  = UDim.new(0, 5); bpPad.PaddingBottom = UDim.new(0, 5)
 
-local actionButton = Instance.new("TextButton")
-actionButton.Size             = UDim2.new(0,150,0,28)
-actionButton.Position         = UDim2.new(0,0,0,181)
-actionButton.BackgroundColor3 = Color3.fromRGB(70,120,180)
-actionButton.TextColor3       = Color3.new(1,1,1)
-actionButton.Font             = Enum.Font.SourceSansBold
-actionButton.TextScaled       = true
-actionButton.Text             = "Run Blueprint"
-actionButton.BorderSizePixel  = 0
-actionButton.Parent           = importView
+-- Import action bar
+local importActionBar = Instance.new("Frame")
+importActionBar.Size             = UDim2.new(1, 0, 0, contentH - (contentH - 92) - 22 - 4)
+importActionBar.Position         = UDim2.new(0, 0, 0, contentH - 66)
+importActionBar.BackgroundTransparency = 1
+importActionBar.Parent           = importView
+
+local runBtn = Instance.new("TextButton")
+runBtn.Size             = UDim2.new(0, 150, 0, 30)
+runBtn.Position         = UDim2.new(0, 0, 0, 0)
+runBtn.BackgroundColor3 = C.accent
+runBtn.TextColor3       = C.text
+runBtn.Font             = Enum.Font.GothamBold
+runBtn.TextSize         = 13
+runBtn.Text             = "▶  Run Blueprint"
+runBtn.BorderSizePixel  = 0
+runBtn.Parent           = importActionBar
+Instance.new("UICorner", runBtn).CornerRadius = UDim.new(0, 6)
+
+local pauseBtn = Instance.new("TextButton")
+pauseBtn.Size             = UDim2.new(0, 110, 0, 30)
+pauseBtn.Position         = UDim2.new(0, 158, 0, 0)
+pauseBtn.BackgroundColor3 = C.card
+pauseBtn.TextColor3       = C.textMuted
+pauseBtn.Font             = Enum.Font.GothamBold
+pauseBtn.TextSize         = 13
+pauseBtn.Text             = "⏸  Pause"
+pauseBtn.BorderSizePixel  = 0
+pauseBtn.Visible          = false
+pauseBtn.Parent           = importActionBar
+Instance.new("UICorner", pauseBtn).CornerRadius = UDim.new(0, 6)
 
 local progressLabel = Instance.new("TextLabel")
-progressLabel.Size               = UDim2.new(0,260,0,25)
-progressLabel.Position           = UDim2.new(0,160,0,181)
+progressLabel.Size               = UDim2.new(1, 0, 0, 22)
+progressLabel.Position           = UDim2.new(0, 0, 0, 36)
 progressLabel.BackgroundTransparency = 1
-progressLabel.TextColor3         = Color3.new(1,1,1)
-progressLabel.Font               = Enum.Font.SourceSansBold
-progressLabel.TextScaled         = true
+progressLabel.TextColor3         = C.textMuted
+progressLabel.Font               = Enum.Font.Gotham
+progressLabel.TextSize           = 12
+progressLabel.TextXAlignment     = Enum.TextXAlignment.Left
 progressLabel.Text               = ""
-progressLabel.Parent             = importView
+progressLabel.Parent             = importActionBar
+
+-- Pause/Resume toggle
+pauseBtn.MouseButton1Click:Connect(function()
+	if not importRunning then return end
+	importPaused = not importPaused
+	if importPaused then
+		pauseBtn.Text             = "▶  Resume"
+		pauseBtn.BackgroundColor3 = C.resume
+		pauseBtn.TextColor3       = C.text
+		progressLabel.Text        = "⏸  Paused — press Resume to continue"
+		progressLabel.TextColor3  = C.warn
+	else
+		pauseBtn.Text             = "⏸  Pause"
+		pauseBtn.BackgroundColor3 = C.pause
+		pauseBtn.TextColor3       = C.text
+		progressLabel.TextColor3  = C.textMuted
+	end
+end)
 
 --------------------------------------------------
 -- SETTINGS PANEL
--- Slides over the main frame content. Not a separate window.
 --------------------------------------------------
 local settingsPanel = Instance.new("Frame")
-settingsPanel.Size             = UDim2.new(1,0,1,0)
-settingsPanel.Position         = UDim2.new(0,0,0,0)
-settingsPanel.BackgroundColor3 = Color3.fromRGB(30,30,35)
+settingsPanel.Size             = UDim2.new(1, 0, 1, 0)
+settingsPanel.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
 settingsPanel.BorderSizePixel  = 0
 settingsPanel.Visible          = false
 settingsPanel.ZIndex           = 10
 settingsPanel.Parent           = frame
+Instance.new("UICorner", settingsPanel).CornerRadius = UDim.new(0, 8)
 
-local settingsTitle = Instance.new("TextLabel")
-settingsTitle.Size             = UDim2.new(1,-40,0,30)
-settingsTitle.Position         = UDim2.new(0,10,0,0)
-settingsTitle.BackgroundTransparency = 1
-settingsTitle.Text             = "Settings"
-settingsTitle.TextColor3       = Color3.new(1,1,1)
-settingsTitle.Font             = Enum.Font.SourceSansBold
-settingsTitle.TextScaled       = true
-settingsTitle.ZIndex           = 11
-settingsTitle.Parent           = settingsPanel
+local sPanelTitle = Instance.new("TextLabel")
+sPanelTitle.Size             = UDim2.new(1, -50, 0, 40)
+sPanelTitle.Position         = UDim2.new(0, 16, 0, 0)
+sPanelTitle.BackgroundTransparency = 1
+sPanelTitle.Text             = "Settings"
+sPanelTitle.TextColor3       = C.text
+sPanelTitle.Font             = Enum.Font.GothamBold
+sPanelTitle.TextSize         = 16
+sPanelTitle.TextXAlignment   = Enum.TextXAlignment.Left
+sPanelTitle.ZIndex           = 11
+sPanelTitle.Parent           = settingsPanel
 
 local closeSettingsBtn = Instance.new("TextButton")
-closeSettingsBtn.Size             = UDim2.new(0,30,0,30)
-closeSettingsBtn.Position         = UDim2.new(1,-35,0,0)
-closeSettingsBtn.BackgroundTransparency = 1
+closeSettingsBtn.Size             = UDim2.new(0, 32, 0, 32)
+closeSettingsBtn.Position         = UDim2.new(1, -42, 0, 4)
+closeSettingsBtn.BackgroundColor3 = C.card
 closeSettingsBtn.Text             = "✕"
-closeSettingsBtn.TextColor3       = Color3.new(1,1,1)
-closeSettingsBtn.Font             = Enum.Font.SourceSansBold
-closeSettingsBtn.TextScaled       = true
+closeSettingsBtn.TextColor3       = C.textMuted
+closeSettingsBtn.Font             = Enum.Font.GothamBold
+closeSettingsBtn.TextSize         = 14
 closeSettingsBtn.BorderSizePixel  = 0
 closeSettingsBtn.ZIndex           = 11
 closeSettingsBtn.Parent           = settingsPanel
+Instance.new("UICorner", closeSettingsBtn).CornerRadius = UDim.new(0, 6)
 
--- Divider
-local divider = Instance.new("Frame")
-divider.Size             = UDim2.new(1,-20,0,1)
-divider.Position         = UDim2.new(0,10,0,32)
-divider.BackgroundColor3 = Color3.fromRGB(70,70,80)
-divider.BorderSizePixel  = 0
-divider.ZIndex           = 11
-divider.Parent           = settingsPanel
+local sDivider = Instance.new("Frame")
+sDivider.Size             = UDim2.new(1, -32, 0, 1)
+sDivider.Position         = UDim2.new(0, 16, 0, 42)
+sDivider.BackgroundColor3 = C.border
+sDivider.BorderSizePixel  = 0
+sDivider.ZIndex           = 11
+sDivider.Parent           = settingsPanel
 
--- Helper: build one toggle row
--- Returns the toggle button so we can update its look when clicked
-local function makeToggleRow(labelText, yPos, isOn)
+local function makeToggleRow(labelText, descText, yPos, isOn)
 	local row = Instance.new("Frame")
-	row.Size             = UDim2.new(1,-20,0,38)
-	row.Position         = UDim2.new(0,10,0,yPos)
-	row.BackgroundColor3 = Color3.fromRGB(40,40,48)
+	row.Size             = UDim2.new(1, -32, 0, 54)
+	row.Position         = UDim2.new(0, 16, 0, yPos)
+	row.BackgroundColor3 = C.card
 	row.BorderSizePixel  = 0
 	row.ZIndex           = 11
 	row.Parent           = settingsPanel
+	Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+	Instance.new("UIStroke", row).Color = C.border
 
 	local lbl = Instance.new("TextLabel")
-	lbl.Size               = UDim2.new(1,-70,1,0)
-	lbl.Position           = UDim2.new(0,10,0,0)
+	lbl.Size               = UDim2.new(1, -70, 0, 22)
+	lbl.Position           = UDim2.new(0, 12, 0, 8)
 	lbl.BackgroundTransparency = 1
 	lbl.Text               = labelText
-	lbl.TextColor3         = Color3.new(1,1,1)
-	lbl.Font               = Enum.Font.SourceSans
-	lbl.TextScaled         = true
+	lbl.TextColor3         = C.text
+	lbl.Font               = Enum.Font.GothamBold
+	lbl.TextSize           = 13
 	lbl.TextXAlignment     = Enum.TextXAlignment.Left
 	lbl.ZIndex             = 12
 	lbl.Parent             = row
 
+	local desc = Instance.new("TextLabel")
+	desc.Size               = UDim2.new(1, -70, 0, 16)
+	desc.Position           = UDim2.new(0, 12, 0, 30)
+	desc.BackgroundTransparency = 1
+	desc.Text               = descText
+	desc.TextColor3         = C.textMuted
+	desc.Font               = Enum.Font.Gotham
+	desc.TextSize           = 11
+	desc.TextXAlignment     = Enum.TextXAlignment.Left
+	desc.ZIndex             = 12
+	desc.Parent             = row
+
 	local toggle = Instance.new("TextButton")
-	toggle.Size             = UDim2.new(0,52,0,26)
-	toggle.Position         = UDim2.new(1,-60,0.5,-13)
+	toggle.Size             = UDim2.new(0, 52, 0, 26)
+	toggle.Position         = UDim2.new(1, -62, 0.5, -13)
 	toggle.BorderSizePixel  = 0
-	toggle.Font             = Enum.Font.SourceSansBold
-	toggle.TextScaled       = true
+	toggle.Font             = Enum.Font.GothamBold
+	toggle.TextSize         = 12
 	toggle.ZIndex           = 12
 	toggle.Parent           = row
+	Instance.new("UICorner", toggle).CornerRadius = UDim.new(0, 13)
 
 	local function refreshToggle(on)
 		toggle.Text             = on and "ON" or "OFF"
-		toggle.BackgroundColor3 = on and Color3.fromRGB(60,160,80) or Color3.fromRGB(120,50,50)
-		toggle.TextColor3       = Color3.new(1,1,1)
+		toggle.BackgroundColor3 = on and C.success or Color3.fromRGB(90, 40, 40)
+		toggle.TextColor3       = C.text
 	end
-
 	refreshToggle(isOn)
 	return toggle, refreshToggle
 end
 
--- Row 1: Dupe Safety
-local dupeSafetyToggle, refreshDupe = makeToggleRow("Dupe Safety", 42, settings.dupeSafety)
+local dupeSafetyToggle, refreshDupe = makeToggleRow(
+	"Dupe Safety", "Skip blocks already placed on the plot", 52, settings.dupeSafety)
 dupeSafetyToggle.MouseButton1Click:Connect(function()
 	settings.dupeSafety = not settings.dupeSafety
 	refreshDupe(settings.dupeSafety)
 end)
 
--- Row 2: Bigger Exporter
-local biggerExporterToggle, refreshBigger = makeToggleRow("Bigger Exporter", 88, settings.biggerExporter)
+local biggerExporterToggle, refreshBigger = makeToggleRow(
+	"Bigger Exporter", "Split large blueprints across up to 9 boxes", 116, settings.biggerExporter)
 biggerExporterToggle.MouseButton1Click:Connect(function()
 	settings.biggerExporter = not settings.biggerExporter
 	refreshBigger(settings.biggerExporter)
-	-- Rebuild the export view to add/remove the scroll boxes
-	if currentTab == "Export" or true then
-		rebuildExportView()
-	end
+	rebuildExportView()
 end)
 
--- Open / close settings
-settingsBtn.MouseButton1Click:Connect(function()
-	settingsPanel.Visible = true
-end)
-closeSettingsBtn.MouseButton1Click:Connect(function()
-	settingsPanel.Visible = false
+settingsBtn.MouseButton1Click:Connect(function() settingsPanel.Visible = true end)
+closeSettingsBtn.MouseButton1Click:Connect(function() settingsPanel.Visible = false end)
+
+--------------------------------------------------
+-- MINIMIZE
+--------------------------------------------------
+local minimized = false
+minimizeBtn.MouseButton1Click:Connect(function()
+	minimized = not minimized
+	frame.Size = minimized
+		and UDim2.new(0, 460, 0, 38)
+		or  UDim2.new(0, 460, 0, 390)
+	minimizeBtn.Text = minimized and "□" or "—"
 end)
 
 --------------------------------------------------
@@ -405,20 +646,21 @@ local currentTab = "Export"
 local function switchTab(tab)
 	currentTab = tab
 	if tab == "Export" then
-		exportTab.BackgroundColor3  = Color3.fromRGB(70,120,180)
-		importTab.BackgroundColor3  = Color3.fromRGB(100,100,100)
+		exportTab.BackgroundColor3  = C.tabActive
+		exportTab.TextColor3        = C.text
+		importTab.BackgroundColor3  = C.tabInact
+		importTab.TextColor3        = C.textMuted
 		exportView.Visible          = true
+		exportActionBar.Visible     = true
 		importView.Visible          = false
-		-- Restore export button/warn to whatever state they were in
-		-- (exportWarnLabel and exportActionBtn keep their last Visible state)
 	else
-		exportTab.BackgroundColor3  = Color3.fromRGB(100,100,100)
-		importTab.BackgroundColor3  = Color3.fromRGB(70,120,180)
+		exportTab.BackgroundColor3  = C.tabInact
+		exportTab.TextColor3        = C.textMuted
+		importTab.BackgroundColor3  = C.tabActive
+		importTab.TextColor3        = C.text
 		exportView.Visible          = false
+		exportActionBar.Visible     = false
 		importView.Visible          = true
-		-- Hide export-only widgets while on import tab
-		exportActionBtn.Visible     = false
-		exportWarnLabel.Visible     = false
 	end
 end
 
@@ -426,7 +668,7 @@ exportTab.MouseButton1Click:Connect(function() switchTab("Export") end)
 importTab.MouseButton1Click:Connect(function() switchTab("Import") end)
 
 --------------------------------------------------
--- AUTOFILL: prefix-match DisplayName or Username on focus lost
+-- AUTOFILL
 --------------------------------------------------
 playerBox.FocusLost:Connect(function()
 	local typed = playerBox.Text
@@ -442,7 +684,7 @@ playerBox.FocusLost:Connect(function()
 end)
 
 --------------------------------------------------
--- HELPERS (original, untouched)
+-- HELPERS
 --------------------------------------------------
 local allowedItems = {"Building Block","Grass","Glass Pane"}
 local function isAllowedItem(name)
@@ -503,9 +745,6 @@ local function getPlot(name)
 	return nil
 end
 
---------------------------------------------------
--- DUPE KEY (original, untouched)
---------------------------------------------------
 local function round(n, step)
 	return math.floor(n / step + 0.5) * step
 end
@@ -562,7 +801,7 @@ function exportBlueprint()
 	local plot = getPlot(playerBox.Text)
 	if not plot then warn("Plot not found") return end
 
-	local terrainBase     = plot:FindFirstChild("Terrain") and plot.Terrain:FindFirstChild("Grass")
+	local terrainBase = plot:FindFirstChild("Terrain") and plot.Terrain:FindFirstChild("Grass")
 	if not terrainBase then warn("Terrain.Grass not found") return end
 
 	local furnitureFolder = plot:FindFirstChild("ActiveAssets") and plot.ActiveAssets:FindFirstChild("Furniture")
@@ -593,26 +832,19 @@ function exportBlueprint()
 
 	if #blocks == 0 then warn("No valid parts found") return end
 
-	-- Update total parts counter
 	totalPartsLabel.Text = "Total parts: " .. #blocks
 
 	if not settings.biggerExporter then
 		if #blocks > PARTS_PER_BOX then
-			-- Too many parts for single box — warn and bail
 			exportBoxes[1].Text     = ""
 			exportWarnLabel.Visible = true
-			exportActionBtn.Visible = false
 			warn("Over 700 parts (" .. #blocks .. ") — enable Bigger Exporter in Settings!")
 			return
 		end
-		-- Normal: fits in one box
 		exportWarnLabel.Visible = false
-		exportActionBtn.Visible = true
 		exportBoxes[1].Text     = table.concat(blocks, ";")
 	else
-		-- Bigger Exporter: fill boxes up to PARTS_PER_BOX each
 		exportWarnLabel.Visible = false
-		exportActionBtn.Visible = true
 		local idx = 1
 		for i, box in ipairs(exportBoxes) do
 			local chunk = {}
@@ -622,11 +854,10 @@ function exportBlueprint()
 				idx += 1
 			end
 			box.Text             = table.concat(chunk, ";")
-			exportLabels[i].Text = "Box " .. i .. ":  " .. #chunk .. " parts"
+			exportLabels[i].Text = "Box " .. i .. " — " .. #chunk .. " parts"
 		end
 	end
 
-	-- Save full blueprint string to a StringValue on the plot
 	local full  = table.concat(blocks, ";")
 	local value = plot:FindFirstChild("Blueprint") or Instance.new("StringValue")
 	value.Name   = "Blueprint"
@@ -637,9 +868,11 @@ function exportBlueprint()
 end
 
 --------------------------------------------------
--- IMPORT (original logic, untouched)
+-- IMPORT (with pause/resume)
 --------------------------------------------------
 local function importBlueprint()
+	if importRunning then return end
+
 	local plot = getPlot(playerBox.Text)
 	if not plot then warn("Plot not found") return end
 
@@ -649,9 +882,22 @@ local function importBlueprint()
 	local code = blueprintBox.Text
 	if code == "" then warn("No blueprint code") return end
 
+	importRunning = true
+	importPaused  = false
+
+	-- Update UI for running state
+	runBtn.Text             = "Running…"
+	runBtn.BackgroundColor3 = C.card
+	runBtn.TextColor3       = C.textMuted
+	pauseBtn.Visible        = true
+	pauseBtn.BackgroundColor3 = C.pause
+	pauseBtn.Text           = "⏸  Pause"
+	pauseBtn.TextColor3     = C.text
+	progressLabel.TextColor3 = C.textMuted
+
 	local existingMap = {}
 	if settings.dupeSafety then
-		progressLabel.Text = "Scanning existing blocks..."
+		progressLabel.Text = "Scanning existing blocks…"
 		existingMap = getExistingMap(plot)
 	end
 
@@ -660,7 +906,12 @@ local function importBlueprint()
 	local placed  = 0
 	local skipped = 0
 
-	for _,block in ipairs(blocks) do
+	for _, block in ipairs(blocks) do
+		-- Pause loop: wait until unpaused
+		while importPaused do
+			task.wait(0.1)
+		end
+
 		if block ~= "" then
 			local data      = string.split(block, "|")
 			local id        = data[1]
@@ -673,20 +924,14 @@ local function importBlueprint()
 				local key = getBlockKey(id, relCFrame, partSize.X, partSize.Y, partSize.Z, hex)
 				if existingMap[key] then
 					skipped += 1
-					progressLabel.Text = "Skipped "..skipped.." | Placed "..placed.." / "..total
+					progressLabel.Text = "Building " .. placed .. " / " .. total .. "  |  Skipped " .. skipped
 					continue
 				end
 				existingMap[key] = true
 			end
 
 			local finalRelCFrame = relCFrame * CFrame.new(0, -partSize.Y/2, 0)
-
-			local sizeArg = {
-				X = partSize.X*10,
-				Y = partSize.Y*10,
-				Z = partSize.Z*10,
-				P = 10
-			}
+			local sizeArg = { X = partSize.X*10, Y = partSize.Y*10, Z = partSize.Z*10, P = 10 }
 
 			local placingPlayerName = playerBox.Text ~= "" and playerBox.Text or LocalPlayer.Name
 			local PlacingFromUser   = Players:FindFirstChild(placingPlayerName)
@@ -707,17 +952,29 @@ local function importBlueprint()
 			end)
 
 			placed += 1
-			progressLabel.Text = "Building "..placed.." / "..total.." | Skipped "..skipped
+			progressLabel.Text = "Building " .. placed .. " / " .. total .. "  |  Skipped " .. skipped
 		end
 	end
 
-	progressLabel.Text = "Done! Placed: "..placed.."  Skipped: "..skipped
+	-- Done
+	importRunning = false
+	importPaused  = false
+
+	progressLabel.Text        = "✔  Done!  Placed: " .. placed .. "   Skipped: " .. skipped
+	progressLabel.TextColor3  = C.success
+	runBtn.Text               = "▶  Run Blueprint"
+	runBtn.BackgroundColor3   = C.accent
+	runBtn.TextColor3         = C.text
+	pauseBtn.Visible          = false
 end
 
-actionButton.MouseButton1Click:Connect(importBlueprint)
+runBtn.MouseButton1Click:Connect(function()
+	task.spawn(importBlueprint)
+end)
 
 --------------------------------------------------
--- INIT: build the export view and set starting tab
+-- INIT
 --------------------------------------------------
 rebuildExportView()
 switchTab("Export")
+print("Blueprint Manager loaded!")
