@@ -234,7 +234,7 @@ for i, scriptData in ipairs(scripts) do
 	end)
 
 	btn.MouseButton1Click:Connect(function()
-		local ok, src = pcallbtn.MouseBu(function()
+		local ok, src = pcall(function()
 			return requestFunc({ Url = scriptData.url, Method = "GET" })
 		end)
 		if ok and src and src.Body then
