@@ -1,4 +1,4 @@
--- Object Blueprint Placer
+-- Object Blueprint Placer (with multi-player support)
 -- State 1 (Moving):   ghost follows mouse on ground | Q/E raise/lower | R rotate
 -- State 2 (Anchored): click freezes position        | click again to print
 -- State 3 (Printing): ghost disappears, fires remotes one by one with ETA
@@ -68,12 +68,17 @@ local function snap(v, step)
 	return math.floor(v / step + 0.5) * step
 end
 
-local function getPlot()
+local function getPlot(name)
+	local playerName = (name ~= "" and name) or LocalPlayer.Name
 	for _, plot in ipairs(Workspace.Property.Plots:GetChildren()) do
 		for _, obj in ipairs(plot:GetDescendants()) do
 			if obj.Name == "Owner" then
-				if obj:IsA("ObjectValue") and obj.Value == LocalPlayer then return obj.Parent end
-				if obj:IsA("StringValue") and obj.Value == LocalPlayer.Name then return obj.Parent end
+				if obj:IsA("ObjectValue") and obj.Value and obj.Value.Name == playerName then
+					return obj.Parent
+				end
+				if obj:IsA("StringValue") and obj.Value == playerName then
+					return obj.Parent
+				end
 			end
 		end
 	end
@@ -83,24 +88,6 @@ local function getGrassCF(plot)
 	local t = plot and plot:FindFirstChild("Terrain")
 	local g = t and t:FindFirstChild("Grass")
 	return g and g.CFrame or CFrame.new()
-end
-
--- Ground Y: cast straight down from mouse XZ at a high Y to find the floor
-local function getGroundY(x, z)
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = {
-		LocalPlayer.Character,
-		GhostFolder
-	}
-
-	local result = Workspace:Raycast(
-		Vector3.new(x, 5000, z),
-		Vector3.new(0, -10000, 0),
-		params
-	)
-
-	return result and result.Position.Y or 0
 end
 
 --------------------------------------------------
@@ -141,19 +128,31 @@ end
 
 --------------------------------------------------
 -- GHOST
+--
+-- Architecture:
+--   placementOrigin = the XZ point on the ground the BB bottom-centre sits on
+--   bbPart          = invisible part whose CFrame IS the BB — driven directly
+--   ghostParts      = parts positioned via offsets FROM bbPart.CFrame
+--   normOffsets[i]  = offset of part i relative to BB bottom-centre (no Y bias),
+--                     rebuilt whenever yRot changes
+--
+-- The BB drives the parts — the parts never drive the BB.
+-- heightOff shifts Y after the ground raycast, so Q/E lifts the whole group.
 --------------------------------------------------
 local GhostFolder = Instance.new("Folder")
 GhostFolder.Name   = "OBPGhost"
 GhostFolder.Parent = Workspace
 
-local ghostParts     = {}
-local bbPart         = nil
-local bbHalfHeight   = 0   -- half the bounding box Y, to centre the bb above origin
+local ghostParts  = {}
+local bbPart      = nil
+local bbSize      = Vector3.zero   -- stored so we can size bbPart after rotation
+local normOffsets = {}             -- CFrame offsets from BB bottom-centre, no rotation applied
 
 local function clearGhost()
 	for _, p in ipairs(ghostParts) do p:Destroy() end
-	ghostParts   = {}
-	bbHalfHeight = 0
+	ghostParts = {}
+	bbSize     = Vector3.zero
+	normOffsets = {}
 	if bbPart then bbPart:Destroy(); bbPart = nil end
 end
 
@@ -161,19 +160,26 @@ local function buildGhost(blocks)
 	clearGhost()
 	if #blocks == 0 then return end
 
-	local center, bbSize = getBoundingBox(blocks)
+	-- Compute axis-aligned bounding box of all parts in blueprint space
+	local center, bbs = getBoundingBox(blocks)
+	bbSize = bbs
 
-	-- Normalise: origin = XZ centre, Y = bottom of the group
-	-- so placing origin at ground level puts the object sitting on the floor
-	local bottomCenter = Vector3.new(center.X, center.Y - bbSize.Y * 0.5, center.Z)
+	-- bottom-centre of the BB in blueprint space
+	local bbBottom = Vector3.new(center.X, center.Y - bbs.Y * 0.5, center.Z)
+
+	-- Store each part's offset from the BB bottom-centre
+	-- (rotation component kept separately so we can spin without rebuilding)
 	for i, b in ipairs(blocks) do
-		local normPos = b.relCF.Position - bottomCenter
-		blocks[i].normCF = CFrame.new(normPos)
-			* CFrame.fromMatrix(Vector3.zero,
-				b.relCF.XVector, b.relCF.YVector, b.relCF.ZVector)
+		local offsetPos = b.relCF.Position - bbBottom
+		-- normOffset: position offset + local rotation of the part
+		normOffsets[i] = {
+			pos    = offsetPos,
+			rotCF  = CFrame.fromMatrix(Vector3.zero,
+				b.relCF.XVector, b.relCF.YVector, b.relCF.ZVector),
+		}
 	end
-	bbHalfHeight = bbSize.Y * 0.5
 
+	-- Ghost parts (one per block)
 	for _, b in ipairs(blocks) do
 		local p = Instance.new("Part")
 		p.Anchored     = true
@@ -181,17 +187,18 @@ local function buildGhost(blocks)
 		p.CastShadow   = false
 		p.Size         = b.size
 		p.Color        = hexToColor3(b.hex)
-		p.Transparency = 0
+		p.Transparency = 0.35
 		p.Material     = Enum.Material.SmoothPlastic
 		p.Parent       = GhostFolder
 		ghostParts[#ghostParts+1] = p
 	end
 
+	-- Bounding box visualiser (driven directly, never computed from parts)
 	bbPart = Instance.new("Part")
 	bbPart.Anchored     = true
 	bbPart.CanCollide   = false
 	bbPart.CastShadow   = false
-	bbPart.Size         = bbSize + Vector3.new(0.08, 0.08, 0.08)
+	bbPart.Size         = bbs + Vector3.new(0.08, 0.08, 0.08)
 	bbPart.Transparency = 1
 	bbPart.Parent       = GhostFolder
 
@@ -204,87 +211,92 @@ end
 
 --------------------------------------------------
 -- STATE MACHINE
--- IDLE → MOVING → ANCHORED → PRINTING → IDLE
 --------------------------------------------------
 local STATE = { IDLE=0, MOVING=1, ANCHORED=2, PRINTING=3 }
 local state         = STATE.IDLE
 local heightOff     = 0
 local yRot          = 0
-local frozenOrigin  = Vector3.zero   -- set when anchored
+local frozenOrigin  = Vector3.zero
 local currentBlocks = {}
 local currentPlot   = nil
 
--- cached rotated normCFs — rebuilt on rotation change
-local rotOffsets = {}
+-- rotatedOffsets[i] = CFrame of part i relative to placementOrigin,
+-- after applying yRot.  Rebuilt by rebuildRotatedOffsets().
+local rotatedOffsets = {}
 
-local function rebuildOffsets()
+local function rebuildRotatedOffsets()
 	local rotCF = CFrame.Angles(0, math.rad(yRot), 0)
-	for i, b in ipairs(currentBlocks) do
-		rotOffsets[i] = rotCF * b.normCF
+	for i, o in ipairs(normOffsets) do
+		-- Rotate the position offset around Y, then apply the part's own rotation
+		rotatedOffsets[i] = CFrame.new(rotCF * o.pos) * rotCF * o.rotCF
 	end
 end
 
+-- Place all ghost pieces given a world-space placementOrigin
+-- (= the XZ mouse position on the ground + heightOff, Y = bottom of BB)
+-- The BB is centred at origin + (0, bbSize.Y/2, 0)
 local function applyOriginToGhost(origin)
-	local originCF = CFrame.new(origin)
-
-	for i, p in ipairs(ghostParts) do
-		p.CFrame = originCF * rotOffsets[i]
-	end
-
+	-- BB sits with its bottom face at origin
+	local bbCentre = Vector3.new(origin.X, origin.Y + bbSize.Y * 0.5, origin.Z)
 	if bbPart then
-		local minY = math.huge
-		local maxY = -math.huge
+		bbPart.CFrame = CFrame.new(bbCentre)
+	end
 
-		for _, p in ipairs(ghostParts) do
-			local half = p.Size.Y * 0.5
-
-			minY = math.min(minY, p.Position.Y - half)
-			maxY = math.max(maxY, p.Position.Y + half)
-		end
-
-		bbPart.CFrame = CFrame.new(
-			origin.X,
-			(minY + maxY) * 0.5,
-			origin.Z
-		)
+	-- Each part is offset from the origin (bottom of BB)
+	local originCF = CFrame.new(origin)
+	for i, p in ipairs(ghostParts) do
+		p.CFrame = originCF * rotatedOffsets[i]
 	end
 end
 
--- Gets XZ from mouse, Y from a downward cast so it sticks to the ground
-local rayParams = RaycastParams.new()
-rayParams.FilterType = Enum.RaycastFilterType.Exclude
+--------------------------------------------------
+-- GROUND DETECTION
+-- Cast downward from high above the mouse XZ.
+-- Clamp to player foot Y so we never land on geometry
+-- that is above the player (e.g. a ceiling).
+--------------------------------------------------
+local groundParams = RaycastParams.new()
+groundParams.FilterType = Enum.RaycastFilterType.Exclude
 
-local function getMouseGroundPos()
-	local mx = Mouse.Hit.Position.X
-	local mz = Mouse.Hit.Position.Z
+local function getPlayerFootY()
+	local char = LocalPlayer.Character
+	local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+	if hrp then
+		-- foot = hip minus half character height (~3 studs typical)
+		local hum = char:FindFirstChild("Humanoid")
+		local hipH = hum and hum.HipHeight or 2.35
+		return hrp.Position.Y - hipH - 0.1
+	end
+	return 0
+end
 
-	local sx = snap(mx, cfg.snapStuds)
-	local sz = snap(mz, cfg.snapStuds)
-
-	rayParams.FilterDescendantsInstances = {
-		LocalPlayer.Character,
-		GhostFolder
-	}
-
+local function getGroundY(wx, wz)
+	groundParams.FilterDescendantsInstances = { LocalPlayer.Character, GhostFolder }
 	local result = Workspace:Raycast(
-		Vector3.new(sx, 5000, sz),
+		Vector3.new(wx, 5000, wz),
 		Vector3.new(0, -10000, 0),
-		rayParams
+		groundParams
 	)
+	local rawY   = result and result.Position.Y or 0
+	local footY  = getPlayerFootY()
+	-- Only use hits at or below the player's feet (+1 stud tolerance for slight elevation)
+	if rawY > footY + 1 then
+		return footY
+	end
+	return rawY
+end
 
-	local gy = result and result.Position.Y or 0
-
-	return Vector3.new(
-		sx,
-		gy + heightOff,
-		sz
-	)
+local function getMousePlacementOrigin()
+	local mx = snap(Mouse.Hit.Position.X, cfg.snapStuds)
+	local mz = snap(Mouse.Hit.Position.Z, cfg.snapStuds)
+	local gy = getGroundY(mx, mz)
+	return Vector3.new(mx, gy + heightOff, mz)
 end
 
 --------------------------------------------------
--- FORWARD DECLARATIONS (GUI refs set later)
+-- FORWARD DECLARATIONS
 --------------------------------------------------
-local statusLabel, placeBtn, cancelBtn, hotkeyBar, rotLbl, printBar, printLbl
+local statusLabel, placeBtn, cancelBtn, hotkeyBar, rotLbl, printBar, printLbl, playerBox
 
 local function setStatus(text, color)
 	if statusLabel then
@@ -293,14 +305,18 @@ local function setStatus(text, color)
 	end
 end
 
+local function getTargetName()
+	return playerBox and playerBox.Text ~= "" and playerBox.Text or ""
+end
+
 --------------------------------------------------
--- PRINT (fires remotes one per step with ETA)
+-- PRINT
 --------------------------------------------------
 local function runPrint(origin)
-	-- Ghost gone immediately
 	clearGhost()
 	if printBar  then printBar.Visible  = true  end
 	if cancelBtn then cancelBtn.Visible = false end
+	if hotkeyBar then hotkeyBar.Visible = false end
 	if placeBtn  then
 		placeBtn.Text             = "Printing…"
 		placeBtn.BackgroundColor3 = Color3.fromRGB(40,40,50)
@@ -311,13 +327,15 @@ local function runPrint(origin)
 	local rotCF    = CFrame.Angles(0, math.rad(yRot), 0)
 	local total    = #currentBlocks
 	local placed   = 0
-
-	-- Estimate: sample 3 calls to get avg ms per part
 	local startTime = tick()
 
-	for _, b in ipairs(currentBlocks) do
-		local worldCF   = CFrame.new(origin) * (rotCF * b.normCF)
-		local newRelCF  = grassCF:ToObjectSpace(worldCF)
+	local targetName      = getTargetName()
+	local placingFromUser = Players:FindFirstChild(targetName ~= "" and targetName or LocalPlayer.Name)
+
+	for i, b in ipairs(currentBlocks) do
+		-- Reconstruct world CFrame the same way applyOriginToGhost does
+		local worldCF    = CFrame.new(origin) * rotatedOffsets[i]
+		local newRelCF   = grassCF:ToObjectSpace(worldCF)
 		local finalRelCF = newRelCF * CFrame.new(0, -b.size.Y * 0.5, 0)
 
 		pcall(function()
@@ -329,34 +347,27 @@ local function runPrint(origin)
 				Color            = b.color,
 				Size             = { X=b.size.X*10, Y=b.size.Y*10, Z=b.size.Z*10, P=10 },
 				CustomColors     = {b.hex},
-				PlacingFromUser  = LocalPlayer,
+				PlacingFromUser  = placingFromUser,
 			}}))
 		end)
 
 		placed += 1
-
-		-- Update ETA label
 		local elapsed = tick() - startTime
 		local avgPer  = elapsed / placed
-		local remaining = total - placed
-		local eta = math.ceil(avgPer * remaining)
-
-		local etaText = placed == total
-			and "Done!"
-			or  (eta < 60 and eta.."s left" or math.ceil(eta/60).."m left")
+		local eta     = math.ceil(avgPer * (total - placed))
+		local etaText = placed == total and "Done!"
+			or (eta < 60 and eta.."s left" or math.ceil(eta/60).."m left")
 
 		if printLbl then
 			printLbl.Text = "Printing "..placed.."/"..total.."  —  "..etaText
 		end
 
-		task.wait()   -- yield per part so Roblox doesn't throttle
+		task.wait()
 	end
 
 	print("[OBP] Printed "..placed.." parts")
-
 	task.wait(1.5)
 
-	-- Reset to idle
 	state = STATE.IDLE
 	heightOff = 0; yRot = 0
 	currentBlocks = {}; currentPlot = nil
@@ -373,7 +384,7 @@ local function runPrint(origin)
 end
 
 --------------------------------------------------
--- STOP (cancel at any point)
+-- STOP
 --------------------------------------------------
 local loopConn, inputConn
 
@@ -397,39 +408,39 @@ local function stopAll()
 end
 
 --------------------------------------------------
--- RENDER LOOP — only moves ghost in MOVING state
+-- RENDER LOOP
+-- XZ lerps smoothly toward the snapped mouse position.
+-- Y is set directly from the ground raycast — no lerp on Y prevents
+-- the ghost bobbing when X/Z lag behind the true mouse position.
+-- The BB is positioned first; parts are then driven from it.
 --------------------------------------------------
-local smoothPos
-local smoothSpeed = 25
+local smoothX = 0
+local smoothZ = 0
+local SMOOTH  = 18   -- lower = slower/smoother, higher = snappier
 
 local function startLoop()
-	if loopConn then
-		loopConn:Disconnect()
-	end
+	if loopConn then loopConn:Disconnect() end
 
-	smoothPos = getMouseGroundPos()
+	local init = getMousePlacementOrigin()
+	smoothX = init.X
+	smoothZ = init.Z
 
 	loopConn = RunService.RenderStepped:Connect(function(dt)
-
 		if state == STATE.MOVING then
-			local targetPos = getMouseGroundPos()
+			local target = getMousePlacementOrigin()
+			local alpha  = 1 - math.exp(-SMOOTH * dt)
 
-			local alpha = 1 - math.exp(-smoothSpeed * dt)
+			smoothX = smoothX + (target.X - smoothX) * alpha
+			smoothZ = smoothZ + (target.Z - smoothZ) * alpha
 
-			smoothPos = Vector3.new(
-				smoothPos.X + (targetPos.X - smoothPos.X) * alpha,
-				targetPos.Y,
-				smoothPos.Z + (targetPos.Z - smoothPos.Z) * alpha
-			)
-
-			applyOriginToGhost(smoothPos)
+			-- Y is always exact — no lag, no jitter
+			local origin = Vector3.new(smoothX, target.Y, smoothZ)
+			applyOriginToGhost(origin)
 		end
 
 		if rotLbl then
-			rotLbl.Text =
-				(state ~= STATE.IDLE and state ~= STATE.PRINTING)
-				and (yRot .. "°")
-				or ""
+			rotLbl.Text = (state == STATE.MOVING or state == STATE.ANCHORED)
+				and (yRot.."°") or ""
 		end
 	end)
 end
@@ -445,15 +456,20 @@ local function startInput()
 		if state == STATE.MOVING then
 			local k = inp.KeyCode
 			if k == Enum.KeyCode.Q then
-				heightOff = heightOff - cfg.heightStep
+				heightOff -= cfg.heightStep
 			elseif k == Enum.KeyCode.E then
-				heightOff = heightOff + cfg.heightStep
+				heightOff += cfg.heightStep
 			elseif k == Enum.KeyCode.R then
 				yRot = (yRot + cfg.rotateAngle) % 360
-				rebuildOffsets()
+				rebuildRotatedOffsets()
 			elseif inp.UserInputType == Enum.UserInputType.MouseButton1 then
-				-- First click: anchor in place
-				frozenOrigin = getMouseGroundPos()
+				-- Snap to exact snapped position before anchoring
+				local origin = getMousePlacementOrigin()
+				frozenOrigin = Vector3.new(
+					snap(origin.X, cfg.snapStuds),
+					origin.Y,
+					snap(origin.Z, cfg.snapStuds)
+				)
 				applyOriginToGhost(frozenOrigin)
 				state = STATE.ANCHORED
 				setStatus("Anchored — click again to print, Cancel to reposition",
@@ -467,14 +483,11 @@ local function startInput()
 
 		elseif state == STATE.ANCHORED then
 			if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-				-- Second click: start printing
 				state = STATE.PRINTING
 				task.spawn(runPrint, frozenOrigin)
 			elseif inp.KeyCode == Enum.KeyCode.X then
-				-- X cancels anchor back to moving
 				state = STATE.MOVING
-				setStatus("Moving — click to anchor",
-					Color3.fromRGB(80,200,110))
+				setStatus("Moving — click to anchor", Color3.fromRGB(80,200,110))
 				if placeBtn then
 					placeBtn.Text             = "🔒  Anchor"
 					placeBtn.BackgroundColor3 = Color3.fromRGB(50,90,50)
@@ -492,15 +505,12 @@ local function beginPlacement(blocks, plot)
 	if #blocks == 0 or not plot then return end
 	currentBlocks = blocks
 	currentPlot   = plot
-	heightOff     = 0; yRot = 0
+	heightOff     = 0
+	yRot          = 0
 	state         = STATE.MOVING
 
-	lastGroundY = getGroundY(
-	Mouse.Hit.Position.X,
-	Mouse.Hit.Position.Z
-)
 	buildGhost(blocks)
-	rebuildOffsets()
+	rebuildRotatedOffsets()
 	startLoop()
 	startInput()
 
@@ -560,8 +570,8 @@ gui.Name="ObjectBlueprintPlacer";gui.ResetOnSpawn=false
 gui.Parent=LocalPlayer:WaitForChild("PlayerGui")
 
 local frame=Instance.new("Frame",gui)
-frame.Name="Main";frame.Size=UDim2.new(0,400,0,310)
-frame.Position=UDim2.new(0.5,-200,0.5,-155)
+frame.Name="Main";frame.Size=UDim2.new(0,400,0,346)
+frame.Position=UDim2.new(0.5,-200,0.5,-173)
 frame.BackgroundColor3=C.bg;frame.BorderSizePixel=0
 frame.Active=true;frame.Draggable=true
 corner(frame,8);stroke(frame,C.border,1)
@@ -580,11 +590,11 @@ settingsToggleBtn.TextColor3=C.muted;settingsToggleBtn.TextSize=14
 local closeMainBtn=btn(tb,"✕",358,4,32,26,C.card)
 closeMainBtn.TextColor3=C.muted;closeMainBtn.TextSize=13
 
--- Blueprint box
+-- Blueprint code
 lbl(frame,"Blueprint Code",10,42,200,14,11,C.muted,Enum.Font.GothamBold)
 
 local bpBox=Instance.new("TextBox",frame)
-bpBox.Size=UDim2.new(1,-20,0,88);bpBox.Position=UDim2.new(0,10,0,58)
+bpBox.Size=UDim2.new(1,-20,0,80);bpBox.Position=UDim2.new(0,10,0,58)
 bpBox.BackgroundColor3=C.input;bpBox.TextColor3=C.text
 bpBox.PlaceholderText="Paste blueprint code here…"
 bpBox.PlaceholderColor3=C.muted;bpBox.TextWrapped=true;bpBox.MultiLine=true
@@ -592,31 +602,63 @@ bpBox.ClearTextOnFocus=false;bpBox.BorderSizePixel=0
 bpBox.Font=Enum.Font.Code;bpBox.TextSize=10
 corner(bpBox);pad(bpBox,6,6,4,4)
 
-local loadBtn = btn(frame,"Load",10,153,80,26,C.accent)
-local partLbl = lbl(frame,"",98,153,280,26,11,C.muted,Enum.Font.Gotham,Enum.TextXAlignment.Right)
+-- Player name
+lbl(frame,"Target Player",10,146,200,14,11,C.muted,Enum.Font.GothamBold)
+
+playerBox = Instance.new("TextBox", frame)
+playerBox.Size              = UDim2.new(1,-20,0,26)
+playerBox.Position          = UDim2.new(0,10,0,162)
+playerBox.BackgroundColor3  = C.input
+playerBox.TextColor3        = C.text
+playerBox.PlaceholderText   = "Player name  (blank = yourself)"
+playerBox.PlaceholderColor3 = C.muted
+playerBox.ClearTextOnFocus  = false
+playerBox.BorderSizePixel   = 0
+playerBox.Font              = Enum.Font.Gotham
+playerBox.TextSize          = 13
+playerBox.Text              = ""
+corner(playerBox); pad(playerBox,8,8,3,3)
+
+-- Autofill on focus lost — partial name match on DisplayName or Name
+playerBox.FocusLost:Connect(function()
+	local typed = playerBox.Text
+	if typed == "" then return end
+	local lower = string.lower(typed)
+	for _, p in ipairs(Players:GetPlayers()) do
+		if string.sub(string.lower(p.DisplayName),1,#lower)==lower
+		or string.sub(string.lower(p.Name),       1,#lower)==lower then
+			playerBox.Text = p.Name
+			return
+		end
+	end
+end)
+
+-- Load row
+local loadBtn = btn(frame,"Load",10,196,80,26,C.accent)
+local partLbl = lbl(frame,"",98,196,280,26,11,C.muted,Enum.Font.Gotham,Enum.TextXAlignment.Right)
 
 -- Status
-statusLabel = lbl(frame,"Ready — load a blueprint to begin",10,186,375,18,11,C.muted)
+statusLabel = lbl(frame,"Ready — load a blueprint to begin",10,230,375,18,11,C.muted)
 
 -- Action row
-placeBtn  = btn(frame,"▶  Begin Placement",10,210,162,28,Color3.fromRGB(50,90,50))
+placeBtn  = btn(frame,"▶  Begin Placement",10,254,162,28,Color3.fromRGB(50,90,50))
 placeBtn.TextColor3=C.muted
 
-cancelBtn = btn(frame,"✕  Cancel",180,210,100,28,C.red)
+cancelBtn = btn(frame,"✕  Cancel",180,254,100,28,C.red)
 cancelBtn.Visible=false
 
-rotLbl = lbl(frame,"",288,210,100,28,11,C.muted,Enum.Font.GothamBold,Enum.TextXAlignment.Right)
+rotLbl = lbl(frame,"",288,254,100,28,11,C.muted,Enum.Font.GothamBold,Enum.TextXAlignment.Right)
 
 -- Hotkey bar
 hotkeyBar=Instance.new("Frame",frame)
-hotkeyBar.Size=UDim2.new(1,-20,0,22);hotkeyBar.Position=UDim2.new(0,10,0,245)
+hotkeyBar.Size=UDim2.new(1,-20,0,22);hotkeyBar.Position=UDim2.new(0,10,0,289)
 hotkeyBar.BackgroundColor3=C.card;hotkeyBar.BorderSizePixel=0;hotkeyBar.Visible=false
 corner(hotkeyBar,5)
 lbl(hotkeyBar,"Q/E  Raise/Lower    R  Rotate    Click  Anchor    X  Unanchor",8,0,370,22,10,C.muted)
 
 -- Print progress bar
 printBar=Instance.new("Frame",frame)
-printBar.Size=UDim2.new(1,-20,0,26);printBar.Position=UDim2.new(0,10,0,272)
+printBar.Size=UDim2.new(1,-20,0,26);printBar.Position=UDim2.new(0,10,0,316)
 printBar.BackgroundColor3=C.card;printBar.BorderSizePixel=0;printBar.Visible=false
 corner(printBar,5)
 printLbl=lbl(printBar,"",8,0,370,26,11,Color3.fromRGB(80,200,110),Enum.Font.GothamBold)
@@ -672,9 +714,9 @@ applyBtn.MouseButton1Click:Connect(function()
 	if not(s and h and r) then
 		applyMsg.Text="⚠  Enter valid numbers";applyMsg.TextColor3=C.warn;return
 	end
-	cfg.snapStuds=math.max(0,s)
-	cfg.heightStep=math.max(0.1,h)
-	cfg.rotateAngle=math.max(1,r)
+	cfg.snapStuds   = math.max(0,s)
+	cfg.heightStep  = math.max(0.1,h)
+	cfg.rotateAngle = math.max(1,r)
 	applyMsg.Text="✔  Applied";applyMsg.TextColor3=Color3.fromRGB(80,200,110)
 end)
 
@@ -690,13 +732,12 @@ end)
 
 cancelBtn.MouseButton1Click:Connect(function()
 	if state == STATE.ANCHORED then
-		-- unanchor back to moving
 		state = STATE.MOVING
 		setStatus("Moving — click to anchor", Color3.fromRGB(80,200,110))
 		if placeBtn then
-			placeBtn.Text="🔒  Anchor"
-			placeBtn.BackgroundColor3=Color3.fromRGB(50,90,50)
-			placeBtn.TextColor3=C.text
+			placeBtn.Text             = "🔒  Anchor"
+			placeBtn.BackgroundColor3 = Color3.fromRGB(50,90,50)
+			placeBtn.TextColor3       = C.text
 		end
 	else
 		stopAll()
@@ -707,9 +748,7 @@ local loadedBlocks = {}
 
 loadBtn.MouseButton1Click:Connect(function()
 	local code = bpBox.Text
-	if code=="" then
-		setStatus("⚠  Paste a blueprint first",C.warn); return
-	end
+	if code=="" then setStatus("⚠  Paste a blueprint first",C.warn); return end
 	loadedBlocks = parseBlueprint(code)
 	if #loadedBlocks==0 then
 		setStatus("⚠  Could not parse blueprint",C.warn)
@@ -717,8 +756,8 @@ loadBtn.MouseButton1Click:Connect(function()
 	end
 	partLbl.Text = #loadedBlocks.." parts"
 	setStatus("✔  Loaded "..#loadedBlocks.." parts", Color3.fromRGB(80,200,110))
-	placeBtn.BackgroundColor3=Color3.fromRGB(50,90,50)
-	placeBtn.TextColor3=C.text
+	placeBtn.BackgroundColor3 = Color3.fromRGB(50,90,50)
+	placeBtn.TextColor3       = C.text
 end)
 
 placeBtn.MouseButton1Click:Connect(function()
@@ -726,21 +765,27 @@ placeBtn.MouseButton1Click:Connect(function()
 		if #loadedBlocks==0 then
 			setStatus("⚠  Load a blueprint first",C.warn); return
 		end
-		local plot = getPlot()
+		local plot = getPlot(getTargetName())
 		if not plot then
-			setStatus("⚠  Plot not found",C.warn); return
+			setStatus("⚠  Plot not found — check the player name",C.warn); return
 		end
 		beginPlacement(loadedBlocks, plot)
+
 	elseif state == STATE.MOVING then
-		-- GUI button acts as anchor too
-		frozenOrigin = getMouseGroundPos()
+		local origin = getMousePlacementOrigin()
+		frozenOrigin = Vector3.new(
+			snap(origin.X, cfg.snapStuds),
+			origin.Y,
+			snap(origin.Z, cfg.snapStuds)
+		)
 		applyOriginToGhost(frozenOrigin)
 		state = STATE.ANCHORED
 		setStatus("Anchored — click again to print, Cancel to reposition",
 			Color3.fromRGB(220,180,60))
-		placeBtn.Text="🖨  Print Here"
-		placeBtn.BackgroundColor3=Color3.fromRGB(60,110,180)
-		placeBtn.TextColor3=C.text
+		placeBtn.Text             = "🖨  Print Here"
+		placeBtn.BackgroundColor3 = Color3.fromRGB(60,110,180)
+		placeBtn.TextColor3       = C.text
+
 	elseif state == STATE.ANCHORED then
 		state = STATE.PRINTING
 		task.spawn(runPrint, frozenOrigin)
