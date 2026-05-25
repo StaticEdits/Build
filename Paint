@@ -22,9 +22,40 @@ local CURRENT_COLOR = "8ca550"
 --// STORAGE
 local SelectedModels = {}
 local HighlightMap = {}
+local ExtraColors = {}
 
---// EXTRA COLORS (up to 4 extras, for a total of 5)
-local ExtraColors = {} -- list of { frame, swatch, hex } entries
+--// THEME
+local T = {
+    BG        = Color3.fromRGB(13, 10, 22),
+    Panel     = Color3.fromRGB(20, 14, 32),
+    TitleBar  = Color3.fromRGB(25, 14, 45),
+    Input     = Color3.fromRGB(25, 20, 35),
+    Stroke    = Color3.fromRGB(100, 60, 255),
+    StrokeDim = Color3.fromRGB(70, 40, 110),
+    Accent    = Color3.fromRGB(90, 40, 200),
+    AccentHov = Color3.fromRGB(120, 60, 255),
+    Green     = Color3.fromRGB(0, 160, 80),
+    Red       = Color3.fromRGB(180, 30, 60),
+    Text      = Color3.fromRGB(220, 200, 255),
+    TextDim   = Color3.fromRGB(160, 130, 210),
+    TextTitle = Color3.fromRGB(160, 100, 255),
+    White     = Color3.new(1, 1, 1),
+}
+
+local function applyStroke(parent, color, thickness)
+    local s = Instance.new("UIStroke")
+    s.Color = color or T.Stroke
+    s.Thickness = thickness or 1.5
+    s.Parent = parent
+    return s
+end
+
+local function applyCorner(parent, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 8)
+    c.Parent = parent
+    return c
+end
 
 --// GUI ROOT
 local ScreenGui = Instance.new("ScreenGui")
@@ -38,152 +69,168 @@ ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 --// ================================================================
 
 local PICKER_W = 260
-local PICKER_H = 300
+local PICKER_H = 310
+local WheelSize = 160
+local SliderW, SliderH = 26, 160
 
 local Picker = Instance.new("Frame")
 Picker.Name = "ColorPicker"
 Picker.Size = UDim2.fromOffset(PICKER_W, PICKER_H)
 Picker.Position = UDim2.fromOffset(300, 200)
-Picker.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+Picker.BackgroundColor3 = T.BG
 Picker.BorderSizePixel = 0
 Picker.Visible = false
 Picker.ZIndex = 50
 Picker.Active = true
 Picker.Parent = ScreenGui
+applyCorner(Picker, 10)
+applyStroke(Picker)
 
-local PickerCorner = Instance.new("UICorner")
-PickerCorner.CornerRadius = UDim.new(0, 10)
-PickerCorner.Parent = Picker
-
--- Picker drag handle
+-- Title bar
 local PickerDrag = Instance.new("TextButton")
 PickerDrag.Size = UDim2.new(1, 0, 0, 28)
-PickerDrag.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
-PickerDrag.Text = "Color Picker"
-PickerDrag.TextColor3 = Color3.new(1, 1, 1)
-PickerDrag.Font = Enum.Font.SourceSansBold
-PickerDrag.TextSize = 16
+PickerDrag.BackgroundColor3 = T.TitleBar
+PickerDrag.Text = ""
 PickerDrag.BorderSizePixel = 0
-PickerDrag.ZIndex = 51
+PickerDrag.ZIndex = 55
 PickerDrag.Parent = Picker
+applyCorner(PickerDrag, 10)
 
-local PickerDragCorner = Instance.new("UICorner")
-PickerDragCorner.CornerRadius = UDim.new(0, 10)
-PickerDragCorner.Parent = PickerDrag
+local PickerDragFix = Instance.new("Frame")
+PickerDragFix.Size = UDim2.new(1, 0, 0.5, 0)
+PickerDragFix.Position = UDim2.new(0, 0, 0.5, 0)
+PickerDragFix.BackgroundColor3 = T.TitleBar
+PickerDragFix.BorderSizePixel = 0
+PickerDragFix.ZIndex = 55
+PickerDragFix.Parent = PickerDrag
 
---// WHEEL: built from layered UIGradients — no asset ID needed.
--- Outer ring = hue rainbow. Inner radial white fade = saturation.
--- A black overlay square with circular mask handles value separately via the slider.
+local PickerTitle = Instance.new("TextLabel")
+PickerTitle.Size = UDim2.new(1, -16, 1, 0)
+PickerTitle.Position = UDim2.fromOffset(8, 0)
+PickerTitle.BackgroundTransparency = 1
+PickerTitle.Text = "✦ Color Picker"
+PickerTitle.TextColor3 = T.TextTitle
+PickerTitle.TextXAlignment = Enum.TextXAlignment.Left
+PickerTitle.Font = Enum.Font.GothamBold
+PickerTitle.TextSize = 13
+PickerTitle.ZIndex = 56
+PickerTitle.Parent = PickerDrag
 
-local WheelSize = 160
+-- Wheel container (clips to circle)
 local WheelFrame = Instance.new("Frame")
 WheelFrame.Name = "WheelFrame"
 WheelFrame.Size = UDim2.fromOffset(WheelSize, WheelSize)
 WheelFrame.Position = UDim2.fromOffset(10, 36)
-WheelFrame.BackgroundColor3 = Color3.new(1, 1, 1)
+WheelFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 WheelFrame.BorderSizePixel = 0
 WheelFrame.ZIndex = 51
 WheelFrame.ClipsDescendants = true
 WheelFrame.Parent = Picker
+applyCorner(WheelFrame, WheelSize)
+applyStroke(WheelFrame, T.StrokeDim, 1)
 
-local WheelCircle = Instance.new("UICorner")
-WheelCircle.CornerRadius = UDim.new(1, 0)
-WheelCircle.Parent = WheelFrame
+-- Container for the polar segments
+local WheelCanvas = Instance.new("Frame")
+WheelCanvas.Size = UDim2.new(1, 0, 1, 0)
+WheelCanvas.BackgroundTransparency = 1
+WheelCanvas.BorderSizePixel = 0
+WheelCanvas.ZIndex = 52
+WheelCanvas.Parent = WheelFrame
 
--- Hue ring: full rainbow gradient rotated around
-local HueRing = Instance.new("ImageLabel")
-HueRing.Size = UDim2.new(1, 0, 1, 0)
-HueRing.BackgroundTransparency = 1
-HueRing.Image = "rbxassetid://4367172462" -- Roblox's built-in color wheel decal (publicly available)
-HueRing.ZIndex = 52
-HueRing.Parent = WheelFrame
+--// BUILD COLOR WHEEL FROM POLAR SEGMENTS
+local wheelPixels = {}
+local cx = WheelSize / 2
+local cy = WheelSize / 2
+local RINGS = 12
 
--- White radial fade over the top (saturation: center=white, edge=full hue)
-local SatOverlay = Instance.new("ImageLabel")
-SatOverlay.Size = UDim2.new(1, 0, 1, 0)
-SatOverlay.BackgroundTransparency = 1
--- A radial gradient: white center fading to transparent edge
-SatOverlay.Image = "rbxassetid://4367190940" -- white center radial fade
-SatOverlay.ZIndex = 53
-SatOverlay.Parent = WheelFrame
+for ring = 1, RINGS do
+    local innerR = (ring - 1) / RINGS * (WheelSize / 2)
+    local outerR = ring / RINGS * (WheelSize / 2)
+    local midR   = (innerR + outerR) / 2
+    local sat    = midR / (WheelSize / 2)
+    local segs   = math.max(8, math.floor(2 * math.pi * midR / 5))
+    local segSize = math.ceil(outerR - innerR) + 2
 
--- Value overlay: black with variable transparency controlled via pickerV
-local ValOverlay = Instance.new("Frame")
-ValOverlay.Size = UDim2.new(1, 0, 1, 0)
-ValOverlay.BackgroundColor3 = Color3.new(0, 0, 0)
-ValOverlay.BackgroundTransparency = 1 -- updated per pickerV
-ValOverlay.BorderSizePixel = 0
-ValOverlay.ZIndex = 54
-ValOverlay.Parent = WheelFrame
+    for seg = 0, segs - 1 do
+        local angle = (seg / segs) * math.pi * 2
+        local hue   = (angle / (math.pi * 2)) % 1
+        local midAngle = angle + (math.pi / segs)
+        local px = cx + midR * math.cos(midAngle)
+        local py = cy + midR * math.sin(midAngle)
 
-local ValOverlayCorner = Instance.new("UICorner")
-ValOverlayCorner.CornerRadius = UDim.new(1, 0)
-ValOverlayCorner.Parent = ValOverlay
+        local f = Instance.new("Frame")
+        f.Size = UDim2.fromOffset(segSize, segSize)
+        f.Position = UDim2.fromOffset(px - segSize / 2, py - segSize / 2)
+        f.BackgroundColor3 = Color3.fromHSV(hue, sat, 1)
+        f.BorderSizePixel = 0
+        f.ZIndex = 52
+        f:SetAttribute("H", hue)
+        f:SetAttribute("S", sat)
+        f.Parent = WheelCanvas
+        table.insert(wheelPixels, f)
+    end
+end
 
--- Wheel cursor dot (child of WheelFrame so position is local to it)
+local function drawWheel(brightness)
+    for _, f in ipairs(wheelPixels) do
+        f.BackgroundColor3 = Color3.fromHSV(
+            f:GetAttribute("H"),
+            f:GetAttribute("S"),
+            brightness
+        )
+    end
+end
+
+-- Wheel dot cursor
 local WheelDot = Instance.new("Frame")
 WheelDot.Size = UDim2.fromOffset(14, 14)
 WheelDot.AnchorPoint = Vector2.new(0.5, 0.5)
-WheelDot.BackgroundColor3 = Color3.new(1, 1, 1)
+WheelDot.Position = UDim2.fromOffset(cx, cy)
+WheelDot.BackgroundColor3 = T.White
 WheelDot.BorderSizePixel = 0
-WheelDot.ZIndex = 56
+WheelDot.ZIndex = 58
 WheelDot.Parent = WheelFrame
-
-local WheelDotCorner = Instance.new("UICorner")
-WheelDotCorner.CornerRadius = UDim.new(1, 0)
-WheelDotCorner.Parent = WheelDot
+applyCorner(WheelDot, 14)
 
 local WheelDotInner = Instance.new("Frame")
 WheelDotInner.Size = UDim2.new(1, -4, 1, -4)
 WheelDotInner.Position = UDim2.fromOffset(2, 2)
-WheelDotInner.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+WheelDotInner.BackgroundColor3 = T.BG
 WheelDotInner.BorderSizePixel = 0
-WheelDotInner.ZIndex = 57
+WheelDotInner.ZIndex = 59
 WheelDotInner.Parent = WheelDot
+applyCorner(WheelDotInner, 14)
 
-local WheelDotInnerCorner = Instance.new("UICorner")
-WheelDotInnerCorner.CornerRadius = UDim.new(1, 0)
-WheelDotInnerCorner.Parent = WheelDotInner
-
--- Value (brightness) slider
-local SliderW, SliderH = 26, WheelSize
+-- Brightness slider
 local SliderFrame = Instance.new("Frame")
 SliderFrame.Size = UDim2.fromOffset(SliderW, SliderH)
 SliderFrame.Position = UDim2.fromOffset(PICKER_W - SliderW - 10, 36)
-SliderFrame.BackgroundColor3 = Color3.new(1, 1, 1)
+SliderFrame.BackgroundColor3 = T.White
 SliderFrame.BorderSizePixel = 0
 SliderFrame.ZIndex = 51
 SliderFrame.ClipsDescendants = true
 SliderFrame.Parent = Picker
+applyCorner(SliderFrame, 6)
+applyStroke(SliderFrame, T.StrokeDim, 1)
 
-local SliderCorner = Instance.new("UICorner")
-SliderCorner.CornerRadius = UDim.new(0, 6)
-SliderCorner.Parent = SliderFrame
-
--- Top half: hue color → white (for the bright region)
 local SliderGrad = Instance.new("UIGradient")
 SliderGrad.Color = ColorSequence.new({
-	ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
-	ColorSequenceKeypoint.new(1, Color3.new(0, 0, 0)),
+    ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
+    ColorSequenceKeypoint.new(1, Color3.new(0, 0, 0)),
 })
 SliderGrad.Rotation = 90
 SliderGrad.Parent = SliderFrame
 
--- Slider thumb (horizontal line)
 local SliderThumb = Instance.new("Frame")
 SliderThumb.Size = UDim2.fromOffset(SliderW, 4)
 SliderThumb.AnchorPoint = Vector2.new(0, 0.5)
 SliderThumb.Position = UDim2.fromOffset(0, 0)
-SliderThumb.BackgroundColor3 = Color3.new(1, 1, 1)
+SliderThumb.BackgroundColor3 = T.TextTitle
 SliderThumb.BorderSizePixel = 0
 SliderThumb.ZIndex = 53
 SliderThumb.Parent = SliderFrame
+applyCorner(SliderThumb, 2)
 
-local SliderThumbCorner = Instance.new("UICorner")
-SliderThumbCorner.CornerRadius = UDim.new(0, 2)
-SliderThumbCorner.Parent = SliderThumb
-
--- Bottom section: preview swatch + hex INPUT + confirm
 local BottomY = 36 + WheelSize + 10
 
 local PreviewSwatch = Instance.new("Frame")
@@ -193,221 +240,207 @@ PreviewSwatch.BackgroundColor3 = Color3.fromRGB(140, 165, 80)
 PreviewSwatch.BorderSizePixel = 0
 PreviewSwatch.ZIndex = 51
 PreviewSwatch.Parent = Picker
+applyCorner(PreviewSwatch, 6)
+applyStroke(PreviewSwatch, T.StrokeDim, 1)
 
-local PreviewSwatchCorner = Instance.new("UICorner")
-PreviewSwatchCorner.CornerRadius = UDim.new(0, 6)
-PreviewSwatchCorner.Parent = PreviewSwatch
-
--- Hex TextBox so user can type in a code directly
 local HexInput = Instance.new("TextBox")
 HexInput.Size = UDim2.fromOffset(PICKER_W - 68, 44)
 HexInput.Position = UDim2.fromOffset(62, BottomY)
-HexInput.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+HexInput.BackgroundColor3 = T.Input
 HexInput.Text = "#8CA550"
 HexInput.PlaceholderText = "#RRGGBB"
-HexInput.TextColor3 = Color3.new(1, 1, 1)
-HexInput.Font = Enum.Font.SourceSansBold
-HexInput.TextSize = 18
+HexInput.PlaceholderColor3 = T.TextDim
+HexInput.TextColor3 = T.Text
+HexInput.Font = Enum.Font.GothamBold
+HexInput.TextSize = 16
 HexInput.ClearTextOnFocus = false
 HexInput.BorderSizePixel = 0
 HexInput.ZIndex = 51
 HexInput.Parent = Picker
-
-local HexInputCorner = Instance.new("UICorner")
-HexInputCorner.CornerRadius = UDim.new(0, 6)
-HexInputCorner.Parent = HexInput
+applyCorner(HexInput, 6)
+applyStroke(HexInput, T.StrokeDim, 1)
 
 local ConfirmBtn = Instance.new("TextButton")
 ConfirmBtn.Size = UDim2.new(1, -20, 0, 32)
 ConfirmBtn.Position = UDim2.fromOffset(10, BottomY + 52)
-ConfirmBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 80)
+ConfirmBtn.BackgroundColor3 = T.Accent
 ConfirmBtn.Text = "Confirm"
-ConfirmBtn.TextColor3 = Color3.new(1, 1, 1)
-ConfirmBtn.Font = Enum.Font.SourceSansBold
-ConfirmBtn.TextSize = 18
+ConfirmBtn.TextColor3 = T.White
+ConfirmBtn.Font = Enum.Font.GothamBold
+ConfirmBtn.TextSize = 15
 ConfirmBtn.ZIndex = 51
 ConfirmBtn.Parent = Picker
+applyCorner(ConfirmBtn, 6)
+applyStroke(ConfirmBtn, T.StrokeDim, 1)
 
-local ConfirmBtnCorner = Instance.new("UICorner")
-ConfirmBtnCorner.CornerRadius = UDim.new(0, 8)
-ConfirmBtnCorner.Parent = ConfirmBtn
+ConfirmBtn.MouseEnter:Connect(function() ConfirmBtn.BackgroundColor3 = T.AccentHov end)
+ConfirmBtn.MouseLeave:Connect(function() ConfirmBtn.BackgroundColor3 = T.Accent end)
 
---// PICKER STATE
+--// ================================================================
+--// PICKER STATE & LOGIC
+--// ================================================================
+
 local pickerH = 0
 local pickerS = 0
 local pickerV = 1
 local pickerCallback = nil
 local draggingWheel = false
 local draggingSlider = false
-local suppressHexUpdate = false -- prevent feedback loop between wheel and hex box
+local suppressHexUpdate = false
 
 local pickerIsDragging = false
 local pickerGuiDragStart = nil
 local pickerGuiStartPos = nil
 
 PickerDrag.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		pickerIsDragging = true
-		pickerGuiDragStart = input.Position
-		pickerGuiStartPos = Picker.Position
-	end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        pickerIsDragging = true
+        pickerGuiDragStart = input.Position
+        pickerGuiStartPos = Picker.Position
+    end
 end)
 PickerDrag.InputEnded:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		pickerIsDragging = false
-	end
-end)
-UserInputService.InputChanged:Connect(function(input)
-	if pickerIsDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-		local delta = input.Position - pickerGuiDragStart
-		Picker.Position = UDim2.fromOffset(
-			pickerGuiStartPos.X.Offset + delta.X,
-			pickerGuiStartPos.Y.Offset + delta.Y
-		)
-	end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        pickerIsDragging = false
+    end
 end)
 
 local function color3ToHex(c)
-	return string.format("%02X%02X%02X",
-		math.floor(c.R * 255 + 0.5),
-		math.floor(c.G * 255 + 0.5),
-		math.floor(c.B * 255 + 0.5)
-	)
+    return string.format("%02X%02X%02X",
+        math.floor(c.R * 255 + 0.5),
+        math.floor(c.G * 255 + 0.5),
+        math.floor(c.B * 255 + 0.5)
+    )
 end
 
 local function updatePickerVisuals()
-	-- Slider gradient: top = current hue at full sat, bottom = black
-	local hueColor = Color3.fromHSV(pickerH, 1, 1)
-	SliderGrad.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, hueColor),
-		ColorSequenceKeypoint.new(1, Color3.new(0, 0, 0)),
-	})
+    -- Recolor wheel segments for brightness
+    drawWheel(pickerV)
 
-	-- Wheel dot position: angle = hue, distance from center = saturation
-	-- Position is in WheelFrame local space. Center = (WheelSize/2, WheelSize/2).
-	local radius = WheelSize / 2
-	local angle = pickerH * math.pi * 2
-	local dotX = radius + pickerS * radius * math.cos(angle)
-	local dotY = radius + pickerS * radius * math.sin(angle)
-	-- AnchorPoint(0.5,0.5) so the dot is centered on the color position
-	WheelDot.Position = UDim2.fromOffset(dotX, dotY)
+    -- Update slider gradient to current hue
+    local hueColor = Color3.fromHSV(pickerH, 1, 1)
+    SliderGrad.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, hueColor),
+        ColorSequenceKeypoint.new(1, Color3.new(0, 0, 0)),
+    })
 
-	-- Value overlay on wheel: V=1 → fully transparent (no black), V=0 → fully opaque black
-	ValOverlay.BackgroundTransparency = pickerV
+    -- Move wheel dot
+    local radius = WheelSize / 2
+    local angle  = pickerH * math.pi * 2
+    local dotX   = radius + pickerS * radius * math.cos(angle)
+    local dotY   = radius + pickerS * radius * math.sin(angle)
+    WheelDot.Position = UDim2.fromOffset(dotX, dotY)
 
-	-- Slider thumb: V=1 at top (Y=0), V=0 at bottom (Y=SliderH)
-	local thumbY = math.clamp((1 - pickerV) * SliderH, 0, SliderH)
-	SliderThumb.Position = UDim2.fromOffset(0, thumbY)
+    -- Move slider thumb
+    local thumbY = math.clamp((1 - pickerV) * SliderH, 0, SliderH)
+    SliderThumb.Position = UDim2.fromOffset(0, thumbY)
 
-	-- Preview and hex (don't update hex box if the user is typing into it)
-	local col = Color3.fromHSV(pickerH, pickerS, pickerV)
-	PreviewSwatch.BackgroundColor3 = col
-	if not suppressHexUpdate then
-		HexInput.Text = "#" .. color3ToHex(col)
-	end
+    -- Preview swatch
+    local col = Color3.fromHSV(pickerH, pickerS, pickerV)
+    PreviewSwatch.BackgroundColor3 = col
+
+    if not suppressHexUpdate then
+        HexInput.Text = "#" .. color3ToHex(col)
+    end
 end
 
--- When user types a hex into the box, parse and update the wheel/slider
 HexInput.FocusLost:Connect(function()
-	suppressHexUpdate = false
-	local raw = HexInput.Text:gsub("#", ""):gsub("%s", "")
-	if #raw == 6 then
-		local r = tonumber(raw:sub(1,2), 16)
-		local g = tonumber(raw:sub(3,4), 16)
-		local b = tonumber(raw:sub(5,6), 16)
-		if r and g and b then
-			pickerH, pickerS, pickerV = Color3.fromRGB(r, g, b):ToHSV()
-			updatePickerVisuals()
-		end
-	end
+    suppressHexUpdate = false
+    local raw = HexInput.Text:gsub("#", ""):gsub("%s", "")
+    if #raw == 6 then
+        local r = tonumber(raw:sub(1,2), 16)
+        local g = tonumber(raw:sub(3,4), 16)
+        local b = tonumber(raw:sub(5,6), 16)
+        if r and g and b then
+            pickerH, pickerS, pickerV = Color3.fromRGB(r, g, b):ToHSV()
+            updatePickerVisuals()
+        end
+    end
 end)
 
 HexInput:GetPropertyChangedSignal("Text"):Connect(function()
-	suppressHexUpdate = true
+    suppressHexUpdate = true
 end)
 
 local function openPicker(screenX, screenY, currentHex, callback)
-	pickerCallback = callback
-	local hex = currentHex:gsub("#", "")
-	local r = (tonumber(hex:sub(1,2), 16) or 140) / 255
-	local g = (tonumber(hex:sub(3,4), 16) or 165) / 255
-	local b = (tonumber(hex:sub(5,6), 16) or 80)  / 255
-	pickerH, pickerS, pickerV = Color3.new(r, g, b):ToHSV()
-
-	local vp = Camera.ViewportSize
-	local px = math.clamp(screenX + 8, 0, vp.X - PICKER_W - 4)
-	local py = math.clamp(screenY, 0, vp.Y - PICKER_H - 4)
-	Picker.Position = UDim2.fromOffset(px, py)
-
-	suppressHexUpdate = false
-	updatePickerVisuals()
-	Picker.Visible = true
+    pickerCallback = callback
+    local hex = currentHex:gsub("#", "")
+    local r = (tonumber(hex:sub(1,2), 16) or 140) / 255
+    local g = (tonumber(hex:sub(3,4), 16) or 165) / 255
+    local b = (tonumber(hex:sub(5,6), 16) or 80)  / 255
+    pickerH, pickerS, pickerV = Color3.new(r, g, b):ToHSV()
+    local vp = Camera.ViewportSize
+    local px = math.clamp(screenX + 8, 0, vp.X - PICKER_W - 4)
+    local py = math.clamp(screenY, 0, vp.Y - PICKER_H - 4)
+    Picker.Position = UDim2.fromOffset(px, py)
+    suppressHexUpdate = false
+    updatePickerVisuals()
+    Picker.Visible = true
 end
 
--- Start wheel drag when clicking anywhere inside WheelFrame
 WheelFrame.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		draggingWheel = true
-	end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        draggingWheel = true
+    end
 end)
-
-UserInputService.InputEnded:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		draggingWheel = false
-		draggingSlider = false
-	end
-end)
-
 SliderFrame.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		draggingSlider = true
-	end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        draggingSlider = true
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        draggingWheel = false
+        draggingSlider = false
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if pickerIsDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local delta = input.Position - pickerGuiDragStart
+        Picker.Position = UDim2.fromOffset(
+            pickerGuiStartPos.X.Offset + delta.X,
+            pickerGuiStartPos.Y.Offset + delta.Y
+        )
+    end
 end)
 
 RunService.RenderStepped:Connect(function()
-	if not Picker.Visible then return end
+    if not Picker.Visible then return end
 
-	if draggingWheel then
-		local mousePos = UserInputService:GetMouseLocation()
-		-- AbsolutePosition is top-left of WheelFrame in screen space
-		local ap = WheelFrame.AbsolutePosition
-		local radius = WheelSize / 2
-		-- Center of wheel in screen space
-		local cx = ap.X + radius
-		local cy = ap.Y + radius
-		local dx = mousePos.X - cx
-		local dy = mousePos.Y - cy
-		local dist = math.sqrt(dx * dx + dy * dy)
-		pickerH = (math.atan2(dy, dx) / (math.pi * 2)) % 1
-		pickerS = math.clamp(dist / radius, 0, 1)
-		suppressHexUpdate = false
-		updatePickerVisuals()
-	end
+    if draggingWheel then
+        local mousePos = UserInputService:GetMouseLocation()
+        local ap = WheelFrame.AbsolutePosition
+        local radius = WheelSize / 2
+        local dx = mousePos.X - (ap.X + radius)
+        local dy = mousePos.Y - (ap.Y + radius)
+        local dist = math.sqrt(dx*dx + dy*dy)
+        pickerH = ((math.atan2(dy, dx) / (math.pi * 2)) + 1) % 1
+        pickerS = math.clamp(dist / radius, 0, 1)
+        suppressHexUpdate = false
+        updatePickerVisuals()
+    end
 
-	if draggingSlider then
-		local mousePos = UserInputService:GetMouseLocation()
-		local ap = SliderFrame.AbsolutePosition
-		-- Clamp mouse Y relative to slider top
-		local relY = math.clamp(mousePos.Y - ap.Y, 0, SliderH)
-		pickerV = 1 - (relY / SliderH)
-		suppressHexUpdate = false
-		updatePickerVisuals()
-	end
+    if draggingSlider then
+        local mousePos = UserInputService:GetMouseLocation()
+        local ap = SliderFrame.AbsolutePosition
+        local relY = math.clamp(mousePos.Y - ap.Y, 0, SliderH)
+        pickerV = 1 - (relY / SliderH)
+        suppressHexUpdate = false
+        updatePickerVisuals()
+    end
 end)
 
 ConfirmBtn.MouseButton1Click:Connect(function()
-	-- Accept whatever is in HexInput if it's valid, otherwise use wheel values
-	local raw = HexInput.Text:gsub("#", ""):gsub("%s", "")
-	local hex
-	if #raw == 6 and tonumber(raw, 16) then
-		hex = raw:upper()
-	else
-		hex = color3ToHex(Color3.fromHSV(pickerH, pickerS, pickerV))
-	end
-	if pickerCallback then
-		pickerCallback(hex)
-	end
-	Picker.Visible = false
+    local raw = HexInput.Text:gsub("#", ""):gsub("%s", "")
+    local hex
+    if #raw == 6 and tonumber(raw, 16) then
+        hex = raw:upper()
+    else
+        hex = color3ToHex(Color3.fromHSV(pickerH, pickerS, pickerV))
+    end
+    if pickerCallback then pickerCallback(hex) end
+    Picker.Visible = false
 end)
 
 --// ================================================================
@@ -417,15 +450,39 @@ end)
 local Main = Instance.new("Frame")
 Main.Size = UDim2.new(0, 240, 0, 260)
 Main.Position = UDim2.new(0, 20, 0.5, -130)
-Main.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+Main.BackgroundColor3 = T.BG
 Main.BorderSizePixel = 0
 Main.Active = true
 Main.Draggable = false
 Main.Parent = ScreenGui
+applyCorner(Main, 10)
+applyStroke(Main)
 
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 8)
-MainCorner.Parent = Main
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 30)
+TitleBar.BackgroundColor3 = T.TitleBar
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = Main
+applyCorner(TitleBar, 10)
+
+local TitleBarFix = Instance.new("Frame")
+TitleBarFix.Size = UDim2.new(1, 0, 0.5, 0)
+TitleBarFix.Position = UDim2.new(0, 0, 0.5, 0)
+TitleBarFix.BackgroundColor3 = T.TitleBar
+TitleBarFix.BorderSizePixel = 0
+TitleBarFix.Parent = TitleBar
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -85, 1, 0)
+Title.Position = UDim2.fromOffset(8, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "✦ FURNITURE PAINTER"
+Title.TextColor3 = T.TextTitle
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 13
+Title.ZIndex = 9
+Title.Parent = TitleBar
 
 local DragHandle = Instance.new("TextButton")
 DragHandle.Size = UDim2.new(1, 0, 0, 30)
@@ -434,529 +491,442 @@ DragHandle.Text = ""
 DragHandle.ZIndex = 10
 DragHandle.Parent = Main
 
-local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, 0, 0, 30)
-Title.BackgroundTransparency = 1
-Title.Text = "Furniture Painter"
-Title.TextColor3 = Color3.new(1, 1, 1)
-Title.Font = Enum.Font.SourceSansBold
-Title.TextSize = 22
-Title.ZIndex = 9
-Title.Parent = Main
-
 local ToggleButton = Instance.new("TextButton")
-ToggleButton.Size = UDim2.new(0, 70, 0, 25)
-ToggleButton.Position = UDim2.new(1, -80, 0, 5)
-ToggleButton.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+ToggleButton.Size = UDim2.new(0, 70, 0, 22)
+ToggleButton.Position = UDim2.new(1, -78, 0, 4)
+ToggleButton.BackgroundColor3 = T.Green
 ToggleButton.Text = "Enabled"
-ToggleButton.TextColor3 = Color3.new(1, 1, 1)
-ToggleButton.Font = Enum.Font.SourceSansBold
-ToggleButton.TextSize = 18
+ToggleButton.TextColor3 = T.White
+ToggleButton.Font = Enum.Font.GothamBold
+ToggleButton.TextSize = 12
 ToggleButton.ZIndex = 11
 ToggleButton.Parent = Main
+applyCorner(ToggleButton, 6)
 
-local ToggleCorner = Instance.new("UICorner")
-ToggleCorner.CornerRadius = UDim.new(0, 6)
-ToggleCorner.Parent = ToggleButton
-
---// PRIMARY COLOR ROW (swatch + hex label)
 local PrimaryRow = Instance.new("Frame")
 PrimaryRow.Size = UDim2.new(1, -20, 0, 35)
 PrimaryRow.Position = UDim2.new(0, 10, 0, 38)
 PrimaryRow.BackgroundTransparency = 1
 PrimaryRow.Parent = Main
 
--- Swatch button (click to open picker)
 local PrimarySwatch = Instance.new("TextButton")
 PrimarySwatch.Size = UDim2.fromOffset(35, 35)
 PrimarySwatch.BackgroundColor3 = Color3.fromRGB(140, 165, 80)
 PrimarySwatch.Text = ""
 PrimarySwatch.BorderSizePixel = 0
 PrimarySwatch.Parent = PrimaryRow
+applyCorner(PrimarySwatch, 6)
+applyStroke(PrimarySwatch, T.StrokeDim, 1)
 
-local PrimarySwatchCorner = Instance.new("UICorner")
-PrimarySwatchCorner.CornerRadius = UDim.new(0, 6)
-PrimarySwatchCorner.Parent = PrimarySwatch
-
--- Hex display label next to swatch
 local PrimaryHexLabel = Instance.new("TextLabel")
 PrimaryHexLabel.Size = UDim2.new(1, -43, 1, 0)
 PrimaryHexLabel.Position = UDim2.fromOffset(43, 0)
-PrimaryHexLabel.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-PrimaryHexLabel.Text = "#" .. CURRENT_COLOR
-PrimaryHexLabel.TextColor3 = Color3.new(1, 1, 1)
-PrimaryHexLabel.Font = Enum.Font.SourceSans
-PrimaryHexLabel.TextSize = 20
+PrimaryHexLabel.BackgroundColor3 = T.Input
+PrimaryHexLabel.Text = "#" .. CURRENT_COLOR:upper()
+PrimaryHexLabel.TextColor3 = T.Text
+PrimaryHexLabel.Font = Enum.Font.Gotham
+PrimaryHexLabel.TextSize = 16
 PrimaryHexLabel.BorderSizePixel = 0
 PrimaryHexLabel.Parent = PrimaryRow
+applyCorner(PrimaryHexLabel, 6)
+applyStroke(PrimaryHexLabel, T.StrokeDim, 1)
 
-local PrimaryHexCorner = Instance.new("UICorner")
-PrimaryHexCorner.CornerRadius = UDim.new(0, 6)
-PrimaryHexCorner.Parent = PrimaryHexLabel
-
--- Current primary hex value (no #)
 local primaryHex = CURRENT_COLOR
 
 local function setPrimaryColor(hex)
-	primaryHex = hex:gsub("#", "")
-	local c = Color3.fromRGB(
-		tonumber(primaryHex:sub(1,2), 16) or 255,
-		tonumber(primaryHex:sub(3,4), 16) or 255,
-		tonumber(primaryHex:sub(5,6), 16) or 255
-	)
-	PrimarySwatch.BackgroundColor3 = c
-	PrimaryHexLabel.Text = "#" .. primaryHex:upper()
+    primaryHex = hex:gsub("#", "")
+    local c = Color3.fromRGB(
+        tonumber(primaryHex:sub(1,2), 16) or 255,
+        tonumber(primaryHex:sub(3,4), 16) or 255,
+        tonumber(primaryHex:sub(5,6), 16) or 255
+    )
+    PrimarySwatch.BackgroundColor3 = c
+    PrimaryHexLabel.Text = "#" .. primaryHex:upper()
 end
 
 PrimarySwatch.MouseButton1Click:Connect(function()
-	local absPos = PrimarySwatch.AbsolutePosition
-	openPicker(absPos.X + 35, absPos.Y, primaryHex, function(hex)
-		setPrimaryColor(hex)
-	end)
+    local absPos = PrimarySwatch.AbsolutePosition
+    openPicker(absPos.X + 35, absPos.Y, primaryHex, function(hex)
+        setPrimaryColor(hex)
+    end)
 end)
 
 local MaterialBox = Instance.new("TextBox")
-MaterialBox.Size = UDim2.new(1, -20, 0, 35)
+MaterialBox.Size = UDim2.new(1, -20, 0, 32)
 MaterialBox.Position = UDim2.new(0, 10, 0, 83)
 MaterialBox.PlaceholderText = "Material ID (16 = Neon)"
+MaterialBox.PlaceholderColor3 = T.TextDim
 MaterialBox.Text = "16"
-MaterialBox.TextColor3 = Color3.new(1, 1, 1)
-MaterialBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+MaterialBox.TextColor3 = T.Text
+MaterialBox.BackgroundColor3 = T.Input
 MaterialBox.ClearTextOnFocus = false
-MaterialBox.Font = Enum.Font.SourceSans
-MaterialBox.TextSize = 22
+MaterialBox.Font = Enum.Font.Gotham
+MaterialBox.TextSize = 14
+MaterialBox.BorderSizePixel = 0
 MaterialBox.Parent = Main
-
-local MaterialCorner = Instance.new("UICorner")
-MaterialCorner.CornerRadius = UDim.new(0, 6)
-MaterialCorner.Parent = MaterialBox
+applyCorner(MaterialBox, 6)
+applyStroke(MaterialBox, T.StrokeDim, 1)
 
 local PlayerBox = Instance.new("TextBox")
-PlayerBox.Size = UDim2.new(1, -20, 0, 35)
-PlayerBox.Position = UDim2.new(0, 10, 0, 128)
+PlayerBox.Size = UDim2.new(1, -20, 0, 32)
+PlayerBox.Position = UDim2.new(0, 10, 0, 124)
 PlayerBox.PlaceholderText = "Player Name (blank = self)"
+PlayerBox.PlaceholderColor3 = T.TextDim
 PlayerBox.Text = ""
-PlayerBox.TextColor3 = Color3.new(1, 1, 1)
-PlayerBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+PlayerBox.TextColor3 = T.Text
+PlayerBox.BackgroundColor3 = T.Input
 PlayerBox.ClearTextOnFocus = false
-PlayerBox.Font = Enum.Font.SourceSans
-PlayerBox.TextSize = 22
+PlayerBox.Font = Enum.Font.Gotham
+PlayerBox.TextSize = 14
+PlayerBox.BorderSizePixel = 0
 PlayerBox.Parent = Main
-
-local PlayerCorner = Instance.new("UICorner")
-PlayerCorner.CornerRadius = UDim.new(0, 6)
-PlayerCorner.Parent = PlayerBox
+applyCorner(PlayerBox, 6)
+applyStroke(PlayerBox, T.StrokeDim, 1)
 
 local Info = Instance.new("TextLabel")
 Info.Size = UDim2.new(1, -20, 0, 70)
-Info.Position = UDim2.new(0, 10, 0, 178)
+Info.Position = UDim2.new(0, 10, 0, 168)
 Info.BackgroundTransparency = 1
-Info.Text =
-	"Click = Select\n" ..
-	"CTRL+Click = Multi Select\n" ..
-	"L = Paint | P = Toggle"
-Info.TextColor3 = Color3.new(1, 1, 1)
+Info.Text = "Click = Select\nCTRL+Click = Multi Select\nL = Paint  |  P = Toggle"
+Info.TextColor3 = T.TextDim
 Info.TextXAlignment = Enum.TextXAlignment.Left
 Info.TextYAlignment = Enum.TextYAlignment.Top
-Info.Font = Enum.Font.SourceSans
-Info.TextSize = 15
+Info.Font = Enum.Font.Gotham
+Info.TextSize = 13
 Info.Parent = Main
 
 --// EXTRA COLORS PANEL
 local ExtraPanel = Instance.new("Frame")
 ExtraPanel.Size = UDim2.new(0, 240, 0, 45)
-ExtraPanel.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+ExtraPanel.BackgroundColor3 = T.BG
 ExtraPanel.BorderSizePixel = 0
 ExtraPanel.Parent = ScreenGui
-
-local ExtraPanelCorner = Instance.new("UICorner")
-ExtraPanelCorner.CornerRadius = UDim.new(0, 8)
-ExtraPanelCorner.Parent = ExtraPanel
+applyCorner(ExtraPanel, 10)
+applyStroke(ExtraPanel)
 
 local AddExtraButton = Instance.new("TextButton")
-AddExtraButton.Size = UDim2.new(1, -20, 0, 30)
-AddExtraButton.Position = UDim2.new(0, 10, 0, 7)
-AddExtraButton.BackgroundColor3 = Color3.fromRGB(0, 120, 200)
+AddExtraButton.Size = UDim2.new(1, -20, 0, 28)
+AddExtraButton.Position = UDim2.new(0, 10, 0, 8)
+AddExtraButton.BackgroundColor3 = T.Accent
 AddExtraButton.Text = "+ Add Extra Color"
-AddExtraButton.TextColor3 = Color3.new(1, 1, 1)
-AddExtraButton.Font = Enum.Font.SourceSansBold
-AddExtraButton.TextSize = 18
+AddExtraButton.TextColor3 = T.White
+AddExtraButton.Font = Enum.Font.GothamBold
+AddExtraButton.TextSize = 13
+AddExtraButton.BorderSizePixel = 0
 AddExtraButton.Parent = ExtraPanel
+applyCorner(AddExtraButton, 6)
 
-local AddExtraCorner = Instance.new("UICorner")
-AddExtraCorner.CornerRadius = UDim.new(0, 6)
-AddExtraCorner.Parent = AddExtraButton
+AddExtraButton.MouseEnter:Connect(function() AddExtraButton.BackgroundColor3 = T.AccentHov end)
+AddExtraButton.MouseLeave:Connect(function() AddExtraButton.BackgroundColor3 = T.Accent end)
 
 --// ================================================================
---// FUNCTIONS
+--// EXTRA COLORS & HELPERS
 --// ================================================================
 
 local EXTRA_ROW_HEIGHT = 42
 local EXTRA_PADDING_TOP = 45
 
 local function rebuildExtraPanel()
-	local count = #ExtraColors
-	local panelHeight = EXTRA_PADDING_TOP + count * EXTRA_ROW_HEIGHT + (count > 0 and 8 or 0)
-	ExtraPanel.Size = UDim2.new(0, 240, 0, panelHeight)
-	for i, entry in ipairs(ExtraColors) do
-		entry.frame.Position = UDim2.new(0, 10, 0, EXTRA_PADDING_TOP + (i - 1) * EXTRA_ROW_HEIGHT)
-	end
+    local count = #ExtraColors
+    local panelHeight = EXTRA_PADDING_TOP + count * EXTRA_ROW_HEIGHT + (count > 0 and 8 or 0)
+    ExtraPanel.Size = UDim2.new(0, 240, 0, panelHeight)
+    for i, entry in ipairs(ExtraColors) do
+        entry.frame.Position = UDim2.new(0, 10, 0, EXTRA_PADDING_TOP + (i-1) * EXTRA_ROW_HEIGHT)
+    end
 end
 
 local function syncExtraPanelPosition()
-	local mainPos = Main.AbsolutePosition
-	local mainSize = Main.AbsoluteSize
-	ExtraPanel.Position = UDim2.fromOffset(mainPos.X, mainPos.Y + mainSize.Y + 6)
+    local mainPos  = Main.AbsolutePosition
+    local mainSize = Main.AbsoluteSize
+    ExtraPanel.Position = UDim2.fromOffset(mainPos.X, mainPos.Y + mainSize.Y + 6)
 end
 
 local function addExtraColor()
-	if #ExtraColors >= 4 then return end
+    if #ExtraColors >= 4 then return end
+    local entryHex = "ffffff"
 
-	local idx = #ExtraColors + 1
-	local entryHex = "ffffff"
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, -20, 0, 35)
+    row.BackgroundTransparency = 1
+    row.Parent = ExtraPanel
 
-	local row = Instance.new("Frame")
-	row.Size = UDim2.new(1, -20, 0, 35)
-	row.BackgroundTransparency = 1
-	row.Parent = ExtraPanel
+    local swatch = Instance.new("TextButton")
+    swatch.Size = UDim2.fromOffset(35, 35)
+    swatch.BackgroundColor3 = T.White
+    swatch.Text = ""
+    swatch.BorderSizePixel = 0
+    swatch.Parent = row
+    applyCorner(swatch, 6)
+    applyStroke(swatch, T.StrokeDim, 1)
 
-	-- Swatch button
-	local swatch = Instance.new("TextButton")
-	swatch.Size = UDim2.fromOffset(35, 35)
-	swatch.BackgroundColor3 = Color3.new(1, 1, 1)
-	swatch.Text = ""
-	swatch.BorderSizePixel = 0
-	swatch.Parent = row
+    local hexLabel = Instance.new("TextLabel")
+    hexLabel.Size = UDim2.new(1, -80, 1, 0)
+    hexLabel.Position = UDim2.fromOffset(43, 0)
+    hexLabel.BackgroundColor3 = T.Input
+    hexLabel.Text = "#FFFFFF"
+    hexLabel.TextColor3 = T.Text
+    hexLabel.Font = Enum.Font.Gotham
+    hexLabel.TextSize = 14
+    hexLabel.BorderSizePixel = 0
+    hexLabel.Parent = row
+    applyCorner(hexLabel, 6)
+    applyStroke(hexLabel, T.StrokeDim, 1)
 
-	local swatchCorner = Instance.new("UICorner")
-	swatchCorner.CornerRadius = UDim.new(0, 6)
-	swatchCorner.Parent = swatch
+    local removeBtn = Instance.new("TextButton")
+    removeBtn.Size = UDim2.fromOffset(32, 35)
+    removeBtn.Position = UDim2.new(1, -32, 0, 0)
+    removeBtn.BackgroundColor3 = T.Red
+    removeBtn.Text = "✕"
+    removeBtn.TextColor3 = T.White
+    removeBtn.Font = Enum.Font.GothamBold
+    removeBtn.TextSize = 16
+    removeBtn.BorderSizePixel = 0
+    removeBtn.Parent = row
+    applyCorner(removeBtn, 6)
 
-	-- Hex label
-	local hexLabel = Instance.new("TextLabel")
-	hexLabel.Size = UDim2.new(1, -80, 1, 0)
-	hexLabel.Position = UDim2.fromOffset(43, 0)
-	hexLabel.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-	hexLabel.Text = "#FFFFFF"
-	hexLabel.TextColor3 = Color3.new(1, 1, 1)
-	hexLabel.Font = Enum.Font.SourceSans
-	hexLabel.TextSize = 18
-	hexLabel.BorderSizePixel = 0
-	hexLabel.Parent = row
+    local entry = { frame = row, swatch = swatch, hexLabel = hexLabel, hex = entryHex }
+    table.insert(ExtraColors, entry)
 
-	local hexLabelCorner = Instance.new("UICorner")
-	hexLabelCorner.CornerRadius = UDim.new(0, 6)
-	hexLabelCorner.Parent = hexLabel
+    local function setExtraColor(hex)
+        entry.hex = hex:gsub("#", "")
+        local c = Color3.fromRGB(
+            tonumber(entry.hex:sub(1,2), 16) or 255,
+            tonumber(entry.hex:sub(3,4), 16) or 255,
+            tonumber(entry.hex:sub(5,6), 16) or 255
+        )
+        swatch.BackgroundColor3 = c
+        hexLabel.Text = "#" .. entry.hex:upper()
+    end
 
-	-- Remove button
-	local removeBtn = Instance.new("TextButton")
-	removeBtn.Size = UDim2.fromOffset(32, 35)
-	removeBtn.Position = UDim2.new(1, -32, 0, 0)
-	removeBtn.BackgroundColor3 = Color3.fromRGB(180, 30, 30)
-	removeBtn.Text = "✕"
-	removeBtn.TextColor3 = Color3.new(1, 1, 1)
-	removeBtn.Font = Enum.Font.SourceSansBold
-	removeBtn.TextSize = 18
-	removeBtn.Parent = row
+    swatch.MouseButton1Click:Connect(function()
+        local absPos = swatch.AbsolutePosition
+        openPicker(absPos.X + 35, absPos.Y, entry.hex, function(hex)
+            setExtraColor(hex)
+        end)
+    end)
 
-	local removeCorner = Instance.new("UICorner")
-	removeCorner.CornerRadius = UDim.new(0, 6)
-	removeCorner.Parent = removeBtn
+    removeBtn.MouseButton1Click:Connect(function()
+        local ei = table.find(ExtraColors, entry)
+        if ei then table.remove(ExtraColors, ei) end
+        row:Destroy()
+        rebuildExtraPanel()
+    end)
 
-	local entry = { frame = row, swatch = swatch, hexLabel = hexLabel, hex = entryHex }
-	table.insert(ExtraColors, entry)
-
-	local function setExtraColor(hex)
-		entry.hex = hex:gsub("#", "")
-		local c = Color3.fromRGB(
-			tonumber(entry.hex:sub(1,2), 16) or 255,
-			tonumber(entry.hex:sub(3,4), 16) or 255,
-			tonumber(entry.hex:sub(5,6), 16) or 255
-		)
-		swatch.BackgroundColor3 = c
-		hexLabel.Text = "#" .. entry.hex:upper()
-	end
-
-	swatch.MouseButton1Click:Connect(function()
-		local absPos = swatch.AbsolutePosition
-		openPicker(absPos.X + 35, absPos.Y, entry.hex, function(hex)
-			setExtraColor(hex)
-		end)
-	end)
-
-	removeBtn.MouseButton1Click:Connect(function()
-		local ei = table.find(ExtraColors, entry)
-		if ei then table.remove(ExtraColors, ei) end
-		row:Destroy()
-		rebuildExtraPanel()
-	end)
-
-	rebuildExtraPanel()
+    rebuildExtraPanel()
 end
 
 AddExtraButton.MouseButton1Click:Connect(addExtraColor)
 
---// PLAYER NAME RESOLUTION
 local function resolvePlayerName(input)
-	if input == "" then return "" end
-	local lower = input:lower()
-	local exactAccount, exactDisplay, partialAccount, partialDisplay
-
-	for _, player in ipairs(Players:GetPlayers()) do
-		local accName  = player.Name
-		local dispName = player.DisplayName
-		local accLower  = accName:lower()
-		local dispLower = dispName:lower()
-
-		if accLower == lower then
-			exactAccount = accName
-			break
-		elseif dispLower == lower and not exactDisplay then
-			exactDisplay = accName
-		elseif accLower:sub(1, #lower) == lower and not partialAccount then
-			partialAccount = accName
-		elseif dispLower:sub(1, #lower) == lower and not partialDisplay then
-			partialDisplay = accName
-		end
-	end
-
-	return exactAccount or exactDisplay or partialAccount or partialDisplay or input
+    if input == "" then return "" end
+    local lower = input:lower()
+    local exactAccount, exactDisplay, partialAccount, partialDisplay
+    for _, player in ipairs(Players:GetPlayers()) do
+        local accLower  = player.Name:lower()
+        local dispLower = player.DisplayName:lower()
+        if accLower == lower then exactAccount = player.Name; break
+        elseif dispLower == lower and not exactDisplay then exactDisplay = player.Name
+        elseif accLower:sub(1, #lower) == lower and not partialAccount then partialAccount = player.Name
+        elseif dispLower:sub(1, #lower) == lower and not partialDisplay then partialDisplay = player.Name
+        end
+    end
+    return exactAccount or exactDisplay or partialAccount or partialDisplay or input
 end
 
 PlayerBox.FocusLost:Connect(function(enterPressed)
-	if enterPressed then
-		PlayerBox.Text = resolvePlayerName(PlayerBox.Text)
-	end
+    if enterPressed then
+        PlayerBox.Text = resolvePlayerName(PlayerBox.Text)
+    end
 end)
 
---// PLOT LOOKUP (original — for server invoke)
 local function getPlot(name)
-	local playerName = (name ~= "" and name) or LocalPlayer.Name
-	for _, plot in ipairs(Workspace.Property.Plots:GetChildren()) do
-		for _, obj in ipairs(plot:GetDescendants()) do
-			if obj.Name == "Owner" then
-				if obj:IsA("ObjectValue") and obj.Value and obj.Value.Name == playerName then
-					return obj.Parent
-				elseif obj:IsA("StringValue") and obj.Value == playerName then
-					return obj.Parent
-				end
-			end
-		end
-	end
+    local playerName = (name ~= "" and name) or LocalPlayer.Name
+    for _, plot in ipairs(Workspace.Property.Plots:GetChildren()) do
+        for _, obj in ipairs(plot:GetDescendants()) do
+            if obj.Name == "Owner" then
+                if obj:IsA("ObjectValue") and obj.Value and obj.Value.Name == playerName then
+                    return obj.Parent
+                elseif obj:IsA("StringValue") and obj.Value == playerName then
+                    return obj.Parent
+                end
+            end
+        end
+    end
 end
 
--- For ownership checking — always returns the top-level Plots child
 local function getPlotRoot(name)
-	local playerName = (name ~= "" and name) or LocalPlayer.Name
-	for _, plot in ipairs(Workspace.Property.Plots:GetChildren()) do
-		for _, obj in ipairs(plot:GetDescendants()) do
-			if obj.Name == "Owner" then
-				if obj:IsA("ObjectValue") and obj.Value and obj.Value.Name == playerName then
-					return plot
-				elseif obj:IsA("StringValue") and obj.Value == playerName then
-					return plot
-				end
-			end
-		end
-	end
+    local playerName = (name ~= "" and name) or LocalPlayer.Name
+    for _, plot in ipairs(Workspace.Property.Plots:GetChildren()) do
+        for _, obj in ipairs(plot:GetDescendants()) do
+            if obj.Name == "Owner" then
+                if obj:IsA("ObjectValue") and obj.Value and obj.Value.Name == playerName then
+                    return plot
+                elseif obj:IsA("StringValue") and obj.Value == playerName then
+                    return plot
+                end
+            end
+        end
+    end
 end
-
---// SELECTION
 
 local function clearSelection()
-	for _, highlight in pairs(HighlightMap) do
-		if highlight then highlight:Destroy() end
-	end
-	table.clear(SelectedModels)
-	table.clear(HighlightMap)
+    for _, highlight in pairs(HighlightMap) do
+        if highlight then highlight:Destroy() end
+    end
+    table.clear(SelectedModels)
+    table.clear(HighlightMap)
 end
 
 local function addHighlight(model)
-	if HighlightMap[model] then return end
-	local highlight = Instance.new("Highlight")
-	highlight.FillColor = Color3.fromRGB(0, 170, 255)
-	highlight.OutlineColor = Color3.new(1, 1, 1)
-	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	highlight.Parent = model
-	HighlightMap[model] = highlight
+    if HighlightMap[model] then return end
+    local highlight = Instance.new("Highlight")
+    highlight.FillColor = T.Accent
+    highlight.OutlineColor = T.TextTitle
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Parent = model
+    HighlightMap[model] = highlight
 end
 
 local function removeHighlight(model)
-	if HighlightMap[model] then
-		HighlightMap[model]:Destroy()
-		HighlightMap[model] = nil
-	end
+    if HighlightMap[model] then
+        HighlightMap[model]:Destroy()
+        HighlightMap[model] = nil
+    end
 end
 
 local function getFurnitureModel(part)
-	local current = part
-	while current and current ~= Workspace do
-		if current:IsA("Model") and current:GetAttribute("SerialId") then
-			return current
-		end
-		current = current.Parent
-	end
-	return nil
+    local current = part
+    while current and current ~= Workspace do
+        if current:IsA("Model") and current:GetAttribute("SerialId") then
+            return current
+        end
+        current = current.Parent
+    end
+    return nil
 end
 
 local function isOwnedByTarget(model)
-	local targetName = PlayerBox.Text ~= "" and PlayerBox.Text or LocalPlayer.Name
-	local plotRoot = getPlotRoot(targetName)
-	if not plotRoot then
-		warn("FurniturePainter: no plot found for '" .. targetName .. "'")
-		return false
-	end
-	return model:IsDescendantOf(plotRoot)
+    local targetName = PlayerBox.Text ~= "" and PlayerBox.Text or LocalPlayer.Name
+    local plotRoot = getPlotRoot(targetName)
+    if not plotRoot then
+        warn("FurniturePainter: no plot found for '" .. targetName .. "'")
+        return false
+    end
+    return model:IsDescendantOf(plotRoot)
 end
 
 local function toggleSelection(model)
-	if not model then return end
-	local index = table.find(SelectedModels, model)
-	if index then
-		table.remove(SelectedModels, index)
-		removeHighlight(model)
-	else
-		table.insert(SelectedModels, model)
-		addHighlight(model)
-	end
+    if not model then return end
+    local index = table.find(SelectedModels, model)
+    if index then
+        table.remove(SelectedModels, index)
+        removeHighlight(model)
+    else
+        table.insert(SelectedModels, model)
+        addHighlight(model)
+    end
 end
 
 local function getFurnitureId(serialRaw)
-	if typeof(serialRaw) == "string" then
-		local split = string.split(serialRaw, "_")
-		return tonumber(split[#split])
-	end
-	return tonumber(serialRaw)
+    if typeof(serialRaw) == "string" then
+        local split = string.split(serialRaw, "_")
+        return tonumber(split[#split])
+    end
+    return tonumber(serialRaw)
 end
 
---// BUILD COLOR TABLE
-
 local function buildColorTable()
-	local colors = {}
-	table.insert(colors, primaryHex)
-	for _, entry in ipairs(ExtraColors) do
-		if entry.hex ~= "" then
-			table.insert(colors, entry.hex)
-		end
-	end
-	return colors
+    local colors = {}
+    table.insert(colors, primaryHex)
+    for _, entry in ipairs(ExtraColors) do
+        if entry.hex ~= "" then
+            table.insert(colors, entry.hex)
+        end
+    end
+    return colors
 end
 
 local function applyColor(model)
-	local serialRaw = model:GetAttribute("SerialId")
-	if not serialRaw then return end
-	local serialId = getFurnitureId(serialRaw)
-	if not serialId then return end
-
-	local plot = getPlot(PlayerBox.Text)
-	if not plot then warn("Plot not found") return end
-
-	local colors = buildColorTable()
-	local materialId = tonumber(MaterialBox.Text) or 16
-
-	pcall(function()
-		ChangeColor:InvokeServer(serialId, plot, colors)
-	end)
-	pcall(function()
-		ChangeTexture:InvokeServer(serialId, plot, 1, materialId)
-	end)
+    local serialRaw = model:GetAttribute("SerialId")
+    if not serialRaw then return end
+    local serialId = getFurnitureId(serialRaw)
+    if not serialId then return end
+    local plot = getPlot(PlayerBox.Text)
+    if not plot then warn("Plot not found") return end
+    local colors = buildColorTable()
+    local materialId = tonumber(MaterialBox.Text) or 16
+    pcall(function() ChangeColor:InvokeServer(serialId, plot, colors) end)
+    pcall(function() ChangeTexture:InvokeServer(serialId, plot, 1, materialId) end)
 end
 
 local function applyToSelection()
-	for _, model in ipairs(SelectedModels) do
-		applyColor(model)
-	end
-	clearSelection()
+    for _, model in ipairs(SelectedModels) do
+        applyColor(model)
+    end
+    clearSelection()
 end
 
---// TOGGLE
-
 ToggleButton.MouseButton1Click:Connect(function()
-	Enabled = not Enabled
-	ToggleButton.Text = Enabled and "Enabled" or "Disabled"
-	ToggleButton.BackgroundColor3 =
-		Enabled and Color3.fromRGB(0, 170, 0) or Color3.fromRGB(170, 0, 0)
+    Enabled = not Enabled
+    ToggleButton.Text = Enabled and "Enabled" or "Disabled"
+    ToggleButton.BackgroundColor3 = Enabled and T.Green or T.Red
 end)
-
---// GUI DRAGGING
 
 local isDraggingGui = false
 local guiDragStart = nil
 local guiStartPos = nil
 
 DragHandle.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		isDraggingGui = true
-		guiDragStart = input.Position
-		guiStartPos = Main.Position
-	end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        isDraggingGui = true
+        guiDragStart = input.Position
+        guiStartPos = Main.Position
+    end
 end)
 DragHandle.InputEnded:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		isDraggingGui = false
-	end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        isDraggingGui = false
+    end
 end)
 UserInputService.InputChanged:Connect(function(input)
-	if isDraggingGui and input.UserInputType == Enum.UserInputType.MouseMovement then
-		local delta = input.Position - guiDragStart
-		Main.Position = UDim2.new(
-			guiStartPos.X.Scale, guiStartPos.X.Offset + delta.X,
-			guiStartPos.Y.Scale, guiStartPos.Y.Offset + delta.Y
-		)
-	end
+    if isDraggingGui and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local delta = input.Position - guiDragStart
+        Main.Position = UDim2.new(
+            guiStartPos.X.Scale, guiStartPos.X.Offset + delta.X,
+            guiStartPos.Y.Scale, guiStartPos.Y.Offset + delta.Y
+        )
+    end
 end)
-
---// CLICK SELECT
-
-Mouse.Button1Down:Connect(function() end)
 
 Mouse.Button1Up:Connect(function()
-	if not Enabled then return end
-	if Picker.Visible then return end -- don't accidentally deselect while using picker
-
-	local ctrl =
-		UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
-		or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
-
-	local target = Mouse.Target
-	if not target then return end
-
-	local model = getFurnitureModel(target)
-
-	if ctrl then
-		if model and isOwnedByTarget(model) then
-			toggleSelection(model)
-		end
-	else
-		clearSelection()
-		if model and isOwnedByTarget(model) then
-			toggleSelection(model)
-		end
-	end
+    if not Enabled then return end
+    if Picker.Visible then return end
+    local ctrl = UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+        or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+    local target = Mouse.Target
+    if not target then return end
+    local model = getFurnitureModel(target)
+    if ctrl then
+        if model and isOwnedByTarget(model) then toggleSelection(model) end
+    else
+        clearSelection()
+        if model and isOwnedByTarget(model) then toggleSelection(model) end
+    end
 end)
 
---// EXTRA PANEL SYNC
 RunService.RenderStepped:Connect(function()
-	syncExtraPanelPosition()
+    syncExtraPanelPosition()
 end)
-
---// KEYBINDS
 
 UserInputService.InputBegan:Connect(function(input, processed)
-	if processed then return end
-
-	if input.KeyCode == Enum.KeyCode.L then
-		applyToSelection()
-	end
-	if input.KeyCode == Enum.KeyCode.Backspace then
-		clearSelection()
-	end
-	if input.KeyCode == Enum.KeyCode.P then
-		Enabled = not Enabled
-		ToggleButton.Text = Enabled and "Enabled" or "Disabled"
-		ToggleButton.BackgroundColor3 =
-			Enabled and Color3.fromRGB(0, 170, 0) or Color3.fromRGB(170, 0, 0)
-	end
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.L then applyToSelection() end
+    if input.KeyCode == Enum.KeyCode.Backspace then clearSelection() end
+    if input.KeyCode == Enum.KeyCode.P then
+        Enabled = not Enabled
+        ToggleButton.Text = Enabled and "Enabled" or "Disabled"
+        ToggleButton.BackgroundColor3 = Enabled and T.Green or T.Red
+    end
 end)
 
 syncExtraPanelPosition()
