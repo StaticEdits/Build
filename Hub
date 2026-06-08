@@ -95,7 +95,7 @@ end
 
 local scripts = {
 	{ name = "Advanced Builder", url = "https://raw.githubusercontent.com/StaticEdits/Build/main/Advanced%20Builder" },
-	{ name = "Vehicle Builder", url = "https://github.com/StaticEdits/Build/blob/main/Vehicles%20Builder" },
+	{ name = "Vehicle Builder", url = "https://raw.githubusercontent.com/StaticEdits/Build/refs/heads/main/Vehicles%20Builder" },
 	{ name = "Emote",            url = "https://raw.githubusercontent.com/StaticEdits/Build/main/Emote" },
 	{ name = "Furniture Builder",url = "https://raw.githubusercontent.com/StaticEdits/Build/main/Furniture%20Builder" },
 	{ name = "Paint",            url = "https://raw.githubusercontent.com/StaticEdits/Build/main/Paint" },
