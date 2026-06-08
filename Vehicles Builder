@@ -1,0 +1,1047 @@
+-- Vehicle Blueprint Manager: Exporter + Importer
+-- Supports: Cars | Boats | Trailers
+-- Lookup:   workspace.Cars/Boats/Trailers  →  .Info.Owner.Value
+-- Base CF:  Cars/Trailers → Chassis.CenterPiece
+--           Boats         → BoatHull.CenterPiece
+
+local Players           = game:GetService("Players")
+local Workspace         = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer       = Players.LocalPlayer
+
+local PlaceFurnitureRemote = ReplicatedStorage.Relays.House:WaitForChild("PlaceFurniture")
+local RSFurniture          = ReplicatedStorage:WaitForChild("Furniture")
+
+--------------------------------------------------
+-- PRE-CACHE furniture ID lookup once at startup
+--------------------------------------------------
+local furnitureIdCache = {}
+for _, fbtn in ipairs(RSFurniture:GetChildren()) do
+	if fbtn:IsA("ImageButton") and fbtn:FindFirstChild("Id") then
+		furnitureIdCache[string.lower(fbtn.Name)] = fbtn.Id.Value
+	end
+end
+RSFurniture.ChildAdded:Connect(function(fbtn)
+	if fbtn:IsA("ImageButton") and fbtn:FindFirstChild("Id") then
+		furnitureIdCache[string.lower(fbtn.Name)] = fbtn.Id.Value
+	end
+end)
+
+--------------------------------------------------
+-- SETTINGS STATE
+--------------------------------------------------
+local settings = {
+	dupeSafety     = true,
+	biggerExporter = false,
+}
+
+local PARTS_PER_BOX = 700
+local MAX_BOXES     = 9
+
+--------------------------------------------------
+-- IMPORT STATE
+--------------------------------------------------
+local importPaused  = false
+local importRunning = false
+
+--------------------------------------------------
+-- VEHICLE TYPE STATE
+--------------------------------------------------
+local vehicleType = "Cars" -- "Cars" | "Boats" | "Trailers"
+
+--------------------------------------------------
+-- COLOR PALETTE
+--------------------------------------------------
+local C = {
+	bg         = Color3.fromRGB(18, 20, 26),
+	panel      = Color3.fromRGB(26, 28, 36),
+	card       = Color3.fromRGB(34, 36, 46),
+	input      = Color3.fromRGB(24, 26, 34),
+	accent     = Color3.fromRGB(55, 140, 230),
+	accentHov  = Color3.fromRGB(80, 160, 255),
+	danger     = Color3.fromRGB(210, 65, 65),
+	success    = Color3.fromRGB(55, 175, 95),
+	warn       = Color3.fromRGB(210, 145, 35),
+	pause      = Color3.fromRGB(175, 125, 35),
+	resume     = Color3.fromRGB(55, 160, 100),
+	tabActive  = Color3.fromRGB(55, 140, 230),
+	tabInact   = Color3.fromRGB(38, 40, 52),
+	cars       = Color3.fromRGB(220, 90, 60),
+	boats      = Color3.fromRGB(45, 155, 200),
+	trailers   = Color3.fromRGB(130, 90, 200),
+	text       = Color3.new(1, 1, 1),
+	textMuted  = Color3.fromRGB(150, 155, 175),
+	border     = Color3.fromRGB(50, 52, 68),
+}
+
+local vehicleColors = {Cars = C.cars, Boats = C.boats, Trailers = C.trailers}
+
+--------------------------------------------------
+-- GUI ROOT
+--------------------------------------------------
+local gui = Instance.new("ScreenGui")
+gui.Name         = "VehicleBlueprintManager"
+gui.ResetOnSpawn = false
+gui.Parent       = LocalPlayer:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Name             = "MainFrame"
+frame.Size             = UDim2.new(0, 480, 0, 420)
+frame.Position         = UDim2.new(0.5, -240, 0.5, -210)
+frame.BackgroundColor3 = C.bg
+frame.Active           = true
+frame.Draggable        = true
+frame.BorderSizePixel  = 0
+frame.Parent           = gui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+local outerStroke = Instance.new("UIStroke", frame)
+outerStroke.Color     = C.border
+outerStroke.Thickness = 1
+
+--------------------------------------------------
+-- TITLE BAR
+--------------------------------------------------
+local titleBar = Instance.new("Frame")
+titleBar.Size             = UDim2.new(1, 0, 0, 38)
+titleBar.BackgroundColor3 = C.panel
+titleBar.BorderSizePixel  = 0
+titleBar.Parent           = frame
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
+
+-- square off bottom of title bar
+local titleFill = Instance.new("Frame")
+titleFill.Size             = UDim2.new(1, 0, 0, 8)
+titleFill.Position         = UDim2.new(0, 0, 1, -8)
+titleFill.BackgroundColor3 = C.panel
+titleFill.BorderSizePixel  = 0
+titleFill.Parent           = titleBar
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size               = UDim2.new(1, -120, 1, 0)
+titleLabel.Position           = UDim2.new(0, 14, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text               = "Vehicle Blueprint Manager"
+titleLabel.TextColor3         = C.text
+titleLabel.Font               = Enum.Font.GothamBold
+titleLabel.TextSize           = 14
+titleLabel.TextXAlignment     = Enum.TextXAlignment.Left
+titleLabel.Parent             = titleBar
+
+local settingsBtn = Instance.new("TextButton")
+settingsBtn.Size             = UDim2.new(0, 32, 0, 28)
+settingsBtn.Position         = UDim2.new(1, -70, 0, 5)
+settingsBtn.BackgroundColor3 = C.card
+settingsBtn.Text             = "⚙"
+settingsBtn.TextColor3       = C.textMuted
+settingsBtn.Font             = Enum.Font.GothamBold
+settingsBtn.TextSize         = 16
+settingsBtn.BorderSizePixel  = 0
+settingsBtn.Parent           = titleBar
+Instance.new("UICorner", settingsBtn).CornerRadius = UDim.new(0, 5)
+
+local minimizeBtn = Instance.new("TextButton")
+minimizeBtn.Size             = UDim2.new(0, 32, 0, 28)
+minimizeBtn.Position         = UDim2.new(1, -36, 0, 5)
+minimizeBtn.BackgroundColor3 = C.card
+minimizeBtn.Text             = "—"
+minimizeBtn.TextColor3       = C.textMuted
+minimizeBtn.Font             = Enum.Font.GothamBold
+minimizeBtn.TextSize         = 14
+minimizeBtn.BorderSizePixel  = 0
+minimizeBtn.Parent           = titleBar
+Instance.new("UICorner", minimizeBtn).CornerRadius = UDim.new(0, 5)
+
+--------------------------------------------------
+-- VEHICLE TYPE SELECTOR (Cars / Boats / Trailers)
+--------------------------------------------------
+local typeRow = Instance.new("Frame")
+typeRow.Size             = UDim2.new(1, -20, 0, 28)
+typeRow.Position         = UDim2.new(0, 10, 0, 44)
+typeRow.BackgroundColor3 = C.panel
+typeRow.BorderSizePixel  = 0
+typeRow.Parent           = frame
+Instance.new("UICorner", typeRow).CornerRadius = UDim.new(0, 6)
+
+local typeButtons = {}
+local typeNames   = {"Cars", "Boats", "Trailers"}
+
+for i, name in ipairs(typeNames) do
+	local btn = Instance.new("TextButton")
+	btn.Size             = UDim2.new(1/3, -4, 1, -6)
+	btn.Position         = UDim2.new((i-1)/3, (i == 1) and 3 or 2, 0, 3)
+	btn.BackgroundColor3 = C.tabInact
+	btn.TextColor3       = C.textMuted
+	btn.Text             = name
+	btn.Font             = Enum.Font.GothamBold
+	btn.TextSize         = 12
+	btn.BorderSizePixel  = 0
+	btn.Parent           = typeRow
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+	typeButtons[name] = btn
+end
+
+local function refreshTypeButtons()
+	for name, btn in pairs(typeButtons) do
+		if name == vehicleType then
+			btn.BackgroundColor3 = vehicleColors[name]
+			btn.TextColor3       = C.text
+		else
+			btn.BackgroundColor3 = C.tabInact
+			btn.TextColor3       = C.textMuted
+		end
+	end
+end
+
+for _, name in ipairs(typeNames) do
+	typeButtons[name].MouseButton1Click:Connect(function()
+		vehicleType = name
+		refreshTypeButtons()
+	end)
+end
+refreshTypeButtons()
+
+--------------------------------------------------
+-- TAB BAR
+--------------------------------------------------
+local tabBar = Instance.new("Frame")
+tabBar.Size             = UDim2.new(1, -20, 0, 28)
+tabBar.Position         = UDim2.new(0, 10, 0, 78)
+tabBar.BackgroundColor3 = C.panel
+tabBar.BorderSizePixel  = 0
+tabBar.Parent           = frame
+Instance.new("UICorner", tabBar).CornerRadius = UDim.new(0, 6)
+
+local exportTab = Instance.new("TextButton")
+exportTab.Size             = UDim2.new(0.5, -3, 1, -6)
+exportTab.Position         = UDim2.new(0, 3, 0, 3)
+exportTab.BackgroundColor3 = C.tabActive
+exportTab.Text             = "Export"
+exportTab.TextColor3       = C.text
+exportTab.Font             = Enum.Font.GothamBold
+exportTab.TextSize         = 12
+exportTab.BorderSizePixel  = 0
+exportTab.Parent           = tabBar
+Instance.new("UICorner", exportTab).CornerRadius = UDim.new(0, 4)
+
+local importTab = Instance.new("TextButton")
+importTab.Size             = UDim2.new(0.5, -3, 1, -6)
+importTab.Position         = UDim2.new(0.5, 0, 0, 3)
+importTab.BackgroundColor3 = C.tabInact
+importTab.Text             = "Import"
+importTab.TextColor3       = C.textMuted
+importTab.Font             = Enum.Font.GothamBold
+importTab.TextSize         = 12
+importTab.BorderSizePixel  = 0
+importTab.Parent           = tabBar
+Instance.new("UICorner", importTab).CornerRadius = UDim.new(0, 4)
+
+--------------------------------------------------
+-- PLAYER NAME ROW
+--------------------------------------------------
+local playerRow = Instance.new("Frame")
+playerRow.Size             = UDim2.new(1, -20, 0, 28)
+playerRow.Position         = UDim2.new(0, 10, 0, 112)
+playerRow.BackgroundTransparency = 1
+playerRow.Parent           = frame
+
+local playerIcon = Instance.new("TextLabel")
+playerIcon.Size               = UDim2.new(0, 22, 1, 0)
+playerIcon.BackgroundTransparency = 1
+playerIcon.Text               = "👤"
+playerIcon.TextSize           = 13
+playerIcon.Font               = Enum.Font.Gotham
+playerIcon.TextColor3         = C.textMuted
+playerIcon.Parent             = playerRow
+
+local playerBox = Instance.new("TextBox")
+playerBox.Size             = UDim2.new(1, -26, 1, 0)
+playerBox.Position         = UDim2.new(0, 26, 0, 0)
+playerBox.Text             = ""
+playerBox.PlaceholderText  = "Player name  (blank = yourself)"
+playerBox.BackgroundColor3 = C.input
+playerBox.TextColor3       = C.text
+playerBox.PlaceholderColor3 = C.textMuted
+playerBox.Font             = Enum.Font.Gotham
+playerBox.TextSize         = 12
+playerBox.BorderSizePixel  = 0
+playerBox.ClearTextOnFocus = false
+playerBox.Parent           = playerRow
+Instance.new("UICorner", playerBox).CornerRadius = UDim.new(0, 5)
+local pbPad = Instance.new("UIPadding", playerBox)
+pbPad.PaddingLeft = UDim.new(0, 8)
+
+--------------------------------------------------
+-- CONTENT AREA
+--------------------------------------------------
+local contentY = 146
+local contentH = 420 - contentY - 10  -- 264
+
+local contentFrame = Instance.new("Frame")
+contentFrame.Size               = UDim2.new(1, -20, 0, contentH)
+contentFrame.Position           = UDim2.new(0, 10, 0, contentY)
+contentFrame.BackgroundTransparency = 1
+contentFrame.ClipsDescendants   = true
+contentFrame.Parent             = frame
+
+--------------------------------------------------
+-- ===== EXPORT VIEW =====
+--------------------------------------------------
+local exportView
+local exportBoxes  = {}
+local exportLabels = {}
+local totalPartsLabel
+
+local exportActionBar = Instance.new("Frame")
+exportActionBar.Size             = UDim2.new(1, 0, 0, 36)
+exportActionBar.Position         = UDim2.new(0, 0, 1, -36)
+exportActionBar.BackgroundColor3 = C.bg
+exportActionBar.BorderSizePixel  = 0
+exportActionBar.Parent           = contentFrame
+
+local exportActionBtn = Instance.new("TextButton")
+exportActionBtn.Size             = UDim2.new(0, 175, 0, 30)
+exportActionBtn.Position         = UDim2.new(0, 0, 0, 3)
+exportActionBtn.BackgroundColor3 = C.accent
+exportActionBtn.TextColor3       = C.text
+exportActionBtn.Font             = Enum.Font.GothamBold
+exportActionBtn.TextSize         = 12
+exportActionBtn.Text             = "⬆  Export Blueprint"
+exportActionBtn.BorderSizePixel  = 0
+exportActionBtn.Parent           = exportActionBar
+Instance.new("UICorner", exportActionBtn).CornerRadius = UDim.new(0, 6)
+
+local exportWarnLabel = Instance.new("TextLabel")
+exportWarnLabel.Size               = UDim2.new(1, -185, 0, 30)
+exportWarnLabel.Position           = UDim2.new(0, 183, 0, 3)
+exportWarnLabel.BackgroundColor3   = Color3.fromRGB(80, 50, 20)
+exportWarnLabel.TextColor3         = Color3.fromRGB(255, 200, 100)
+exportWarnLabel.Font               = Enum.Font.Gotham
+exportWarnLabel.TextSize           = 11
+exportWarnLabel.TextWrapped        = true
+exportWarnLabel.Text               = "⚠  Over 700 parts — enable Bigger Exporter in Settings"
+exportWarnLabel.BorderSizePixel    = 0
+exportWarnLabel.Visible            = false
+exportWarnLabel.Parent             = exportActionBar
+Instance.new("UICorner", exportWarnLabel).CornerRadius = UDim.new(0, 6)
+local warnPad = Instance.new("UIPadding", exportWarnLabel)
+warnPad.PaddingLeft  = UDim.new(0, 6)
+warnPad.PaddingRight = UDim.new(0, 6)
+
+local function makeTextBox(parent, h, yPos)
+	local box = Instance.new("TextBox")
+	box.Size             = UDim2.new(1, 0, 0, h)
+	box.Position         = UDim2.new(0, 0, 0, yPos)
+	box.BackgroundColor3 = C.input
+	box.TextColor3       = C.text
+	box.TextWrapped      = true
+	box.MultiLine        = true
+	box.ClearTextOnFocus = false
+	box.BorderSizePixel  = 0
+	box.Font             = Enum.Font.Code
+	box.TextSize         = 11
+	box.Text             = ""
+	box.Parent           = parent
+	Instance.new("UICorner", box).CornerRadius = UDim.new(0, 5)
+	local p = Instance.new("UIPadding", box)
+	p.PaddingLeft = UDim.new(0, 6); p.PaddingRight  = UDim.new(0, 6)
+	p.PaddingTop  = UDim.new(0, 4); p.PaddingBottom = UDim.new(0, 4)
+	return box
+end
+
+local function rebuildExportView()
+	if exportView then exportView:Destroy() end
+	exportBoxes  = {}
+	exportLabels = {}
+	exportWarnLabel.Visible = false
+
+	local scrollH = contentH - 40
+
+	exportView = Instance.new("Frame")
+	exportView.Size               = UDim2.new(1, 0, 0, scrollH)
+	exportView.Position           = UDim2.new(0, 0, 0, 0)
+	exportView.BackgroundTransparency = 1
+	exportView.Parent             = contentFrame
+
+	local headerRow = Instance.new("Frame")
+	headerRow.Size             = UDim2.new(1, 0, 0, 22)
+	headerRow.BackgroundTransparency = 1
+	headerRow.Parent           = exportView
+
+	local boxLabel = Instance.new("TextLabel")
+	boxLabel.Size               = UDim2.new(0.5, 0, 1, 0)
+	boxLabel.BackgroundTransparency = 1
+	boxLabel.Text               = settings.biggerExporter and "Export Boxes" or "Blueprint Code"
+	boxLabel.TextColor3         = C.textMuted
+	boxLabel.Font               = Enum.Font.GothamBold
+	boxLabel.TextSize           = 12
+	boxLabel.TextXAlignment     = Enum.TextXAlignment.Left
+	boxLabel.Parent             = headerRow
+
+	totalPartsLabel = Instance.new("TextLabel")
+	totalPartsLabel.Size               = UDim2.new(0.5, 0, 1, 0)
+	totalPartsLabel.Position           = UDim2.new(0.5, 0, 0, 0)
+	totalPartsLabel.BackgroundTransparency = 1
+	totalPartsLabel.TextColor3         = C.textMuted
+	totalPartsLabel.Font               = Enum.Font.Gotham
+	totalPartsLabel.TextSize           = 12
+	totalPartsLabel.Text               = "Total parts: —"
+	totalPartsLabel.TextXAlignment     = Enum.TextXAlignment.Right
+	totalPartsLabel.Parent             = headerRow
+
+	if not settings.biggerExporter then
+		local box = makeTextBox(exportView, scrollH - 26, 26)
+		table.insert(exportBoxes, box)
+		table.insert(exportLabels, totalPartsLabel)
+	else
+		local scroll = Instance.new("ScrollingFrame")
+		scroll.Size                 = UDim2.new(1, 0, 0, scrollH - 26)
+		scroll.Position             = UDim2.new(0, 0, 0, 26)
+		scroll.BackgroundTransparency = 1
+		scroll.ScrollBarThickness   = 4
+		scroll.ScrollBarImageColor3 = C.border
+		scroll.BorderSizePixel      = 0
+		scroll.Parent               = exportView
+
+		local BOX_H   = 72
+		local LABEL_H = 20
+		local GAP     = 8
+		local cy      = 4
+
+		for i = 1, MAX_BOXES do
+			local rowBg = Instance.new("Frame")
+			rowBg.Size             = UDim2.new(1, -4, 0, LABEL_H + BOX_H + 6)
+			rowBg.Position         = UDim2.new(0, 0, 0, cy)
+			rowBg.BackgroundColor3 = C.card
+			rowBg.BorderSizePixel  = 0
+			rowBg.Parent           = scroll
+			Instance.new("UICorner", rowBg).CornerRadius = UDim.new(0, 6)
+
+			local lbl = Instance.new("TextLabel")
+			lbl.Size             = UDim2.new(1, -10, 0, LABEL_H)
+			lbl.Position         = UDim2.new(0, 8, 0, 3)
+			lbl.BackgroundTransparency = 1
+			lbl.TextColor3       = C.textMuted
+			lbl.Font             = Enum.Font.GothamBold
+			lbl.TextSize         = 11
+			lbl.Text             = "Box " .. i .. " — 0 parts"
+			lbl.TextXAlignment   = Enum.TextXAlignment.Left
+			lbl.Parent           = rowBg
+
+			local box = Instance.new("TextBox")
+			box.Size             = UDim2.new(1, -10, 0, BOX_H)
+			box.Position         = UDim2.new(0, 5, 0, LABEL_H + 4)
+			box.BackgroundColor3 = C.input
+			box.TextColor3       = C.text
+			box.TextWrapped      = true
+			box.MultiLine        = true
+			box.ClearTextOnFocus = false
+			box.BorderSizePixel  = 0
+			box.Font             = Enum.Font.Code
+			box.TextSize         = 10
+			box.Text             = ""
+			box.Parent           = rowBg
+			Instance.new("UICorner", box).CornerRadius = UDim.new(0, 4)
+			local bp = Instance.new("UIPadding", box)
+			bp.PaddingLeft = UDim.new(0, 5); bp.PaddingRight  = UDim.new(0, 5)
+			bp.PaddingTop  = UDim.new(0, 3); bp.PaddingBottom = UDim.new(0, 3)
+
+			cy += LABEL_H + BOX_H + 6 + GAP
+			table.insert(exportBoxes,  box)
+			table.insert(exportLabels, lbl)
+		end
+		scroll.CanvasSize = UDim2.new(0, 0, 0, cy)
+	end
+end
+
+exportActionBtn.MouseButton1Click:Connect(function() exportBlueprint() end)
+
+--------------------------------------------------
+-- ===== IMPORT VIEW =====
+--------------------------------------------------
+local importView = Instance.new("Frame")
+importView.Size               = UDim2.new(1, 0, 1, 0)
+importView.BackgroundTransparency = 1
+importView.Visible            = false
+importView.Parent             = contentFrame
+
+local bpHeaderLabel = Instance.new("TextLabel")
+bpHeaderLabel.Size               = UDim2.new(1, 0, 0, 18)
+bpHeaderLabel.BackgroundTransparency = 1
+bpHeaderLabel.Text               = "Blueprint Code"
+bpHeaderLabel.TextColor3         = C.textMuted
+bpHeaderLabel.Font               = Enum.Font.GothamBold
+bpHeaderLabel.TextSize           = 12
+bpHeaderLabel.TextXAlignment     = Enum.TextXAlignment.Left
+bpHeaderLabel.Parent             = importView
+
+local blueprintBox = Instance.new("TextBox")
+blueprintBox.Size             = UDim2.new(1, 0, 0, contentH - 92)
+blueprintBox.Position         = UDim2.new(0, 0, 0, 22)
+blueprintBox.BackgroundColor3 = C.input
+blueprintBox.TextColor3       = C.text
+blueprintBox.PlaceholderText  = "Paste blueprint code here…"
+blueprintBox.PlaceholderColor3 = C.textMuted
+blueprintBox.TextWrapped      = true
+blueprintBox.MultiLine        = true
+blueprintBox.ClearTextOnFocus = false
+blueprintBox.BorderSizePixel  = 0
+blueprintBox.Font             = Enum.Font.Code
+blueprintBox.TextSize         = 11
+blueprintBox.Text             = ""
+blueprintBox.Parent           = importView
+Instance.new("UICorner", blueprintBox).CornerRadius = UDim.new(0, 5)
+local bpPad = Instance.new("UIPadding", blueprintBox)
+bpPad.PaddingLeft = UDim.new(0, 8); bpPad.PaddingRight  = UDim.new(0, 8)
+bpPad.PaddingTop  = UDim.new(0, 5); bpPad.PaddingBottom = UDim.new(0, 5)
+
+-- Import action bar
+local importActionBar = Instance.new("Frame")
+importActionBar.Size             = UDim2.new(1, 0, 0, contentH - (contentH - 92) - 22 - 4)
+importActionBar.Position         = UDim2.new(0, 0, 0, contentH - 66)
+importActionBar.BackgroundTransparency = 1
+importActionBar.Parent           = importView
+
+local runBtn = Instance.new("TextButton")
+runBtn.Size             = UDim2.new(0, 155, 0, 30)
+runBtn.Position         = UDim2.new(0, 0, 0, 0)
+runBtn.BackgroundColor3 = C.accent
+runBtn.TextColor3       = C.text
+runBtn.Font             = Enum.Font.GothamBold
+runBtn.TextSize         = 12
+runBtn.Text             = "▶  Run Blueprint"
+runBtn.BorderSizePixel  = 0
+runBtn.Parent           = importActionBar
+Instance.new("UICorner", runBtn).CornerRadius = UDim.new(0, 6)
+
+local pauseBtn = Instance.new("TextButton")
+pauseBtn.Size             = UDim2.new(0, 110, 0, 30)
+pauseBtn.Position         = UDim2.new(0, 163, 0, 0)
+pauseBtn.BackgroundColor3 = C.card
+pauseBtn.TextColor3       = C.textMuted
+pauseBtn.Font             = Enum.Font.GothamBold
+pauseBtn.TextSize         = 12
+pauseBtn.Text             = "⏸  Pause"
+pauseBtn.BorderSizePixel  = 0
+pauseBtn.Visible          = false
+pauseBtn.Parent           = importActionBar
+Instance.new("UICorner", pauseBtn).CornerRadius = UDim.new(0, 6)
+
+local progressLabel = Instance.new("TextLabel")
+progressLabel.Size               = UDim2.new(1, 0, 0, 22)
+progressLabel.Position           = UDim2.new(0, 0, 0, 36)
+progressLabel.BackgroundTransparency = 1
+progressLabel.TextColor3         = C.textMuted
+progressLabel.Font               = Enum.Font.Gotham
+progressLabel.TextSize           = 12
+progressLabel.TextXAlignment     = Enum.TextXAlignment.Left
+progressLabel.Text               = ""
+progressLabel.Parent             = importActionBar
+
+pauseBtn.MouseButton1Click:Connect(function()
+	if not importRunning then return end
+	importPaused = not importPaused
+	if importPaused then
+		pauseBtn.Text             = "▶  Resume"
+		pauseBtn.BackgroundColor3 = C.resume
+		pauseBtn.TextColor3       = C.text
+		progressLabel.Text        = "⏸  Paused — press Resume to continue"
+		progressLabel.TextColor3  = C.warn
+	else
+		pauseBtn.Text             = "⏸  Pause"
+		pauseBtn.BackgroundColor3 = C.pause
+		pauseBtn.TextColor3       = C.text
+		progressLabel.TextColor3  = C.textMuted
+	end
+end)
+
+--------------------------------------------------
+-- SETTINGS PANEL
+--------------------------------------------------
+local settingsPanel = Instance.new("Frame")
+settingsPanel.Size             = UDim2.new(1, 0, 1, 0)
+settingsPanel.BackgroundColor3 = Color3.fromRGB(16, 17, 22)
+settingsPanel.BorderSizePixel  = 0
+settingsPanel.Visible          = false
+settingsPanel.ZIndex           = 10
+settingsPanel.Parent           = frame
+Instance.new("UICorner", settingsPanel).CornerRadius = UDim.new(0, 8)
+
+local sPanelTitle = Instance.new("TextLabel")
+sPanelTitle.Size             = UDim2.new(1, -50, 0, 40)
+sPanelTitle.Position         = UDim2.new(0, 16, 0, 0)
+sPanelTitle.BackgroundTransparency = 1
+sPanelTitle.Text             = "Settings"
+sPanelTitle.TextColor3       = C.text
+sPanelTitle.Font             = Enum.Font.GothamBold
+sPanelTitle.TextSize         = 15
+sPanelTitle.TextXAlignment   = Enum.TextXAlignment.Left
+sPanelTitle.ZIndex           = 11
+sPanelTitle.Parent           = settingsPanel
+
+local closeSettingsBtn = Instance.new("TextButton")
+closeSettingsBtn.Size             = UDim2.new(0, 32, 0, 32)
+closeSettingsBtn.Position         = UDim2.new(1, -42, 0, 4)
+closeSettingsBtn.BackgroundColor3 = C.card
+closeSettingsBtn.Text             = "✕"
+closeSettingsBtn.TextColor3       = C.textMuted
+closeSettingsBtn.Font             = Enum.Font.GothamBold
+closeSettingsBtn.TextSize         = 13
+closeSettingsBtn.BorderSizePixel  = 0
+closeSettingsBtn.ZIndex           = 11
+closeSettingsBtn.Parent           = settingsPanel
+Instance.new("UICorner", closeSettingsBtn).CornerRadius = UDim.new(0, 6)
+
+local sDivider = Instance.new("Frame")
+sDivider.Size             = UDim2.new(1, -32, 0, 1)
+sDivider.Position         = UDim2.new(0, 16, 0, 42)
+sDivider.BackgroundColor3 = C.border
+sDivider.BorderSizePixel  = 0
+sDivider.ZIndex           = 11
+sDivider.Parent           = settingsPanel
+
+local function makeToggleRow(labelText, descText, yPos, isOn)
+	local row = Instance.new("Frame")
+	row.Size             = UDim2.new(1, -32, 0, 54)
+	row.Position         = UDim2.new(0, 16, 0, yPos)
+	row.BackgroundColor3 = C.card
+	row.BorderSizePixel  = 0
+	row.ZIndex           = 11
+	row.Parent           = settingsPanel
+	Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+	Instance.new("UIStroke", row).Color = C.border
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size               = UDim2.new(1, -70, 0, 22)
+	lbl.Position           = UDim2.new(0, 12, 0, 8)
+	lbl.BackgroundTransparency = 1
+	lbl.Text               = labelText
+	lbl.TextColor3         = C.text
+	lbl.Font               = Enum.Font.GothamBold
+	lbl.TextSize           = 13
+	lbl.TextXAlignment     = Enum.TextXAlignment.Left
+	lbl.ZIndex             = 12
+	lbl.Parent             = row
+
+	local desc = Instance.new("TextLabel")
+	desc.Size               = UDim2.new(1, -70, 0, 16)
+	desc.Position           = UDim2.new(0, 12, 0, 30)
+	desc.BackgroundTransparency = 1
+	desc.Text               = descText
+	desc.TextColor3         = C.textMuted
+	desc.Font               = Enum.Font.Gotham
+	desc.TextSize           = 11
+	desc.TextXAlignment     = Enum.TextXAlignment.Left
+	desc.ZIndex             = 12
+	desc.Parent             = row
+
+	local toggle = Instance.new("TextButton")
+	toggle.Size             = UDim2.new(0, 52, 0, 26)
+	toggle.Position         = UDim2.new(1, -62, 0.5, -13)
+	toggle.BorderSizePixel  = 0
+	toggle.Font             = Enum.Font.GothamBold
+	toggle.TextSize         = 12
+	toggle.ZIndex           = 12
+	toggle.Parent           = row
+	Instance.new("UICorner", toggle).CornerRadius = UDim.new(0, 13)
+
+	local function refreshToggle(on)
+		toggle.Text             = on and "ON" or "OFF"
+		toggle.BackgroundColor3 = on and C.success or Color3.fromRGB(90, 40, 40)
+		toggle.TextColor3       = C.text
+	end
+	refreshToggle(isOn)
+	return toggle, refreshToggle
+end
+
+local dupeSafetyToggle, refreshDupe = makeToggleRow(
+	"Dupe Safety", "Skip blocks already placed on the vehicle", 52, settings.dupeSafety)
+dupeSafetyToggle.MouseButton1Click:Connect(function()
+	settings.dupeSafety = not settings.dupeSafety
+	refreshDupe(settings.dupeSafety)
+end)
+
+local biggerExporterToggle, refreshBigger = makeToggleRow(
+	"Bigger Exporter", "Split large blueprints across up to 9 boxes", 116, settings.biggerExporter)
+biggerExporterToggle.MouseButton1Click:Connect(function()
+	settings.biggerExporter = not settings.biggerExporter
+	refreshBigger(settings.biggerExporter)
+	rebuildExportView()
+end)
+
+settingsBtn.MouseButton1Click:Connect(function() settingsPanel.Visible = true end)
+closeSettingsBtn.MouseButton1Click:Connect(function() settingsPanel.Visible = false end)
+
+--------------------------------------------------
+-- MINIMIZE
+--------------------------------------------------
+local minimized = false
+minimizeBtn.MouseButton1Click:Connect(function()
+	minimized = not minimized
+	frame.Size = minimized
+		and UDim2.new(0, 480, 0, 38)
+		or  UDim2.new(0, 480, 0, 420)
+	minimizeBtn.Text = minimized and "□" or "—"
+end)
+
+--------------------------------------------------
+-- TAB LOGIC
+--------------------------------------------------
+local currentTab = "Export"
+
+local function switchTab(tab)
+	currentTab = tab
+	if tab == "Export" then
+		exportTab.BackgroundColor3 = C.tabActive
+		exportTab.TextColor3       = C.text
+		importTab.BackgroundColor3 = C.tabInact
+		importTab.TextColor3       = C.textMuted
+		exportView.Visible         = true
+		exportActionBar.Visible    = true
+		importView.Visible         = false
+	else
+		exportTab.BackgroundColor3 = C.tabInact
+		exportTab.TextColor3       = C.textMuted
+		importTab.BackgroundColor3 = C.tabActive
+		importTab.TextColor3       = C.text
+		exportView.Visible         = false
+		exportActionBar.Visible    = false
+		importView.Visible         = true
+	end
+end
+
+exportTab.MouseButton1Click:Connect(function() switchTab("Export") end)
+importTab.MouseButton1Click:Connect(function() switchTab("Import") end)
+
+--------------------------------------------------
+-- AUTOFILL PLAYER NAME
+--------------------------------------------------
+playerBox.FocusLost:Connect(function()
+	local typed = playerBox.Text
+	if typed == "" then return end
+	local lower = string.lower(typed)
+	for _, p in ipairs(Players:GetPlayers()) do
+		if string.sub(string.lower(p.DisplayName), 1, #lower) == lower
+		or string.sub(string.lower(p.Name),        1, #lower) == lower then
+			playerBox.Text = p.Name
+			break
+		end
+	end
+end)
+
+--------------------------------------------------
+-- HELPERS
+--------------------------------------------------
+local function cfToString(cf)
+	local c = {cf:GetComponents()}
+	for i, v in ipairs(c) do c[i] = string.format("%.5f", v) end
+	return table.concat(c, ",")
+end
+
+local function stringToCFrame(str)
+	local nums = {}
+	for v in string.gmatch(str, "[^,]+") do table.insert(nums, tonumber(v)) end
+	return CFrame.new(
+		nums[1],  nums[2],  nums[3],
+		nums[4],  nums[5],  nums[6],
+		nums[7],  nums[8],  nums[9],
+		nums[10], nums[11], nums[12]
+	)
+end
+
+local function sizeToString(size)
+	return table.concat({size.X, size.Y, size.Z}, ",")
+end
+
+local function stringToSize(str)
+	local nums = {}
+	for v in string.gmatch(str, "[^,]+") do table.insert(nums, tonumber(v)) end
+	return {X = nums[1], Y = nums[2], Z = nums[3], P = 10}
+end
+
+local function colorToHex(c)
+	local r = math.clamp(math.floor(c.R * 255 + 0.5), 0, 255)
+	local g = math.clamp(math.floor(c.G * 255 + 0.5), 0, 255)
+	local b = math.clamp(math.floor(c.B * 255 + 0.5), 0, 255)
+	return string.format("%02x%02x%02x", r, g, b)
+end
+
+local function round(n, step)
+	return math.floor(n / step + 0.5) * step
+end
+
+-- Returns the vehicle instance from workspace based on vehicleType and owner name
+local function getVehicle(playerName)
+	local name   = (playerName ~= "" and playerName) or LocalPlayer.Name
+	local folder = Workspace:FindFirstChild(vehicleType)
+	if not folder then
+		warn(vehicleType .. " folder not found in Workspace")
+		return nil
+	end
+	for _, vehicle in ipairs(folder:GetChildren()) do
+		local info  = vehicle:FindFirstChild("Info")
+		local owner = info and info:FindFirstChild("Owner")
+		if owner and owner.Value == name then
+			return vehicle
+		end
+	end
+	warn("No " .. vehicleType:sub(1, -2) .. " found for player: " .. name)
+	return nil
+end
+
+-- Gets the CenterPiece BasePart used as the relative CFrame anchor
+-- Cars and Trailers: vehicle.Chassis.CenterPiece
+-- Boats:             vehicle.BoatHull.CenterPiece
+local function getCenterPiece(vehicle)
+	if vehicleType == "Boats" then
+		local hull = vehicle:FindFirstChild("BoatHull")
+		if not hull then warn("BoatHull not found on boat") return nil end
+		return hull:FindFirstChild("CenterPiece")
+	else
+		-- Cars and Trailers
+		local chassis = vehicle:FindFirstChild("Chassis")
+		if not chassis then warn("Chassis not found on vehicle") return nil end
+		return chassis:FindFirstChild("CenterPiece")
+	end
+end
+
+local function getBlockKey(id, relCF, sizeX, sizeY, sizeZ, hex)
+	local p = relCF.Position
+	local _, _, _, r00, r01, r02, r10, r11, r12, r20, r21, r22 = relCF:GetComponents()
+	return string.format(
+		"%s|%.1f,%.1f,%.1f|%.1f,%.1f,%.1f|%s|%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
+		id,
+		round(p.X, 0.1), round(p.Y, 0.1), round(p.Z, 0.1),
+		round(sizeX, 0.1), round(sizeY, 0.1), round(sizeZ, 0.1),
+		hex,
+		round(r00, 0.01), round(r01, 0.01), round(r02, 0.01),
+		round(r10, 0.01), round(r11, 0.01), round(r12, 0.01),
+		round(r20, 0.01), round(r21, 0.01), round(r22, 0.01)
+	)
+end
+
+-- Builds a map of already-placed blocks on the vehicle for dupe safety
+local function getExistingMap(vehicle, centerPiece)
+	local map            = {}
+	local modelsFolder   = vehicle:FindFirstChild("Functional")
+		and vehicle.Functional:FindFirstChild("Models")
+	if not modelsFolder then return map end
+
+	local baseCF = centerPiece.CFrame
+	local count  = 0
+
+	for _, model in ipairs(modelsFolder:GetChildren()) do
+		local item  = model:FindFirstChild("Item")
+		local color = model:FindFirstChild("Color")
+		if not (item and color) then continue end
+
+		local id = furnitureIdCache[string.lower(item.Value)]
+		if not id then continue end
+
+		for _, part in ipairs(model:GetDescendants()) do
+			if part:IsA("BasePart") then
+				local relCF = baseCF:ToObjectSpace(part.CFrame)
+				local key   = getBlockKey(id, relCF, part.Size.X, part.Size.Y, part.Size.Z, colorToHex(part.Color))
+				map[key]    = true
+				count      += 1
+				if count % 100 == 0 then task.wait() end
+			end
+		end
+	end
+
+	return map
+end
+
+--------------------------------------------------
+-- EXPORT
+--------------------------------------------------
+function exportBlueprint()
+	local vehicle = getVehicle(playerBox.Text)
+	if not vehicle then return end
+
+	local centerPiece = getCenterPiece(vehicle)
+	if not centerPiece then
+		warn("CenterPiece not found on vehicle")
+		return
+	end
+
+	local modelsFolder = vehicle:FindFirstChild("Functional")
+		and vehicle.Functional:FindFirstChild("Models")
+	if not modelsFolder then
+		warn("Functional.Models not found on vehicle")
+		return
+	end
+
+	local blocks = {}
+	for _, model in ipairs(modelsFolder:GetChildren()) do
+		local item  = model:FindFirstChild("Item")
+		local color = model:FindFirstChild("Color")
+		if item and color then
+			local id = furnitureIdCache[string.lower(item.Value)]
+			if not id then continue end
+
+			for _, part in ipairs(model:GetDescendants()) do
+				if part:IsA("BasePart") then
+					local rel = centerPiece.CFrame:ToObjectSpace(part.CFrame)
+					table.insert(blocks, table.concat({
+						id,
+						cfToString(rel),
+						model.Color.Value,
+						sizeToString(part.Size),
+						colorToHex(part.Color)
+					}, "|"))
+				end
+			end
+		end
+	end
+
+	if #blocks == 0 then warn("No valid parts found on vehicle") return end
+
+	totalPartsLabel.Text = "Total parts: " .. #blocks
+
+	if not settings.biggerExporter then
+		if #blocks > PARTS_PER_BOX then
+			exportBoxes[1].Text     = ""
+			exportWarnLabel.Visible = true
+			warn("Over 700 parts (" .. #blocks .. ") — enable Bigger Exporter in Settings!")
+			return
+		end
+		exportWarnLabel.Visible = false
+		exportBoxes[1].Text     = table.concat(blocks, ";")
+	else
+		exportWarnLabel.Visible = false
+		local idx = 1
+		for i, box in ipairs(exportBoxes) do
+			local chunk = {}
+			for _ = 1, PARTS_PER_BOX do
+				if idx > #blocks then break end
+				table.insert(chunk, blocks[idx])
+				idx += 1
+			end
+			box.Text             = table.concat(chunk, ";")
+			exportLabels[i].Text = "Box " .. i .. " — " .. #chunk .. " parts"
+		end
+	end
+
+	-- Cache on the vehicle for convenience
+	local value     = vehicle:FindFirstChild("Blueprint") or Instance.new("StringValue")
+	value.Name      = "Blueprint"
+	value.Value     = table.concat(blocks, ";")
+	value.Parent    = vehicle
+
+	print(vehicleType:sub(1, -2) .. " blueprint exported! Total parts:", #blocks)
+end
+
+--------------------------------------------------
+-- IMPORT (with pause / resume)
+--------------------------------------------------
+local function importBlueprint()
+	if importRunning then return end
+
+	local vehicle = getVehicle(playerBox.Text)
+	if not vehicle then return end
+
+	local centerPiece = getCenterPiece(vehicle)
+	if not centerPiece then
+		warn("CenterPiece not found on vehicle")
+		return
+	end
+
+	local code = blueprintBox.Text
+	if code == "" then warn("No blueprint code") return end
+
+	importRunning = true
+	importPaused  = false
+
+	runBtn.Text             = "Running…"
+	runBtn.BackgroundColor3 = C.card
+	runBtn.TextColor3       = C.textMuted
+	pauseBtn.Visible        = true
+	pauseBtn.BackgroundColor3 = C.pause
+	pauseBtn.Text           = "⏸  Pause"
+	pauseBtn.TextColor3     = C.text
+	progressLabel.TextColor3 = C.textMuted
+
+	local existingMap = {}
+	if settings.dupeSafety then
+		progressLabel.Text = "Scanning existing blocks…"
+		existingMap = getExistingMap(vehicle, centerPiece)
+	end
+
+	local blocks  = string.split(code, ";")
+	local total   = #blocks
+	local placed  = 0
+	local skipped = 0
+
+	for _, block in ipairs(blocks) do
+		while importPaused do task.wait(0.1) end
+
+		if block ~= "" then
+			local data      = string.split(block, "|")
+			local id        = data[1]
+			local relCFrame = stringToCFrame(data[2])
+			local color     = data[3]
+			local partSize  = stringToSize(data[4])
+			local hex       = data[5]
+
+			if settings.dupeSafety then
+				local key = getBlockKey(id, relCFrame, partSize.X, partSize.Y, partSize.Z, hex)
+				if existingMap[key] then
+					skipped += 1
+					progressLabel.Text = "Building " .. placed .. " / " .. total .. "  |  Skipped " .. skipped
+					continue
+				end
+				existingMap[key] = true
+			end
+
+			local finalRelCFrame = relCFrame * CFrame.new(0, -partSize.Y / 2, 0)
+			local sizeArg = {
+				X = partSize.X * 10,
+				Y = partSize.Y * 10,
+				Z = partSize.Z * 10,
+				P = 10
+			}
+
+			local placingPlayerName = playerBox.Text ~= "" and playerBox.Text or LocalPlayer.Name
+			local PlacingFromUser   = Players:FindFirstChild(placingPlayerName)
+
+			local args = {{
+				PurchaseForPlace = true,
+				Id               = id,
+				Vehicle          = vehicle,
+				RelativeCFrame   = finalRelCFrame,
+				Color            = color,
+				Size             = sizeArg,
+				CustomColors     = {hex},
+				PlacingFromUser  = PlacingFromUser,
+			}}
+
+			pcall(function()
+				PlaceFurnitureRemote:InvokeServer(unpack(args))
+			end)
+
+			placed += 1
+			progressLabel.Text = "Building " .. placed .. " / " .. total .. "  |  Skipped " .. skipped
+		end
+	end
+
+	-- Done
+	importRunning           = false
+	importPaused            = false
+	progressLabel.Text      = "✔  Done!  Placed: " .. placed .. "   Skipped: " .. skipped
+	progressLabel.TextColor3 = C.success
+	runBtn.Text             = "▶  Run Blueprint"
+	runBtn.BackgroundColor3 = C.accent
+	runBtn.TextColor3       = C.text
+	pauseBtn.Visible        = false
+end
+
+runBtn.MouseButton1Click:Connect(function()
+	task.spawn(importBlueprint)
+end)
+
+--------------------------------------------------
+-- INIT
+--------------------------------------------------
+rebuildExportView()
+switchTab("Export")
+print("Vehicle Blueprint Manager loaded! (Cars / Boats / Trailers)")
