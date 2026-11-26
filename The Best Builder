@@ -1,0 +1,1842 @@
+--[[
+    Blueprint Manager (In-Game)  --  v5
+    Run as a LocalScript in StarterPlayerScripts.
+
+    UNIVERSAL PLACEMENT CONTRACT
+    ----------------------------
+    The remote places the model so its pivot lands exactly at
+    RelativeCFrame (relative to the reference part), then applies
+    OriginalOffset internally for resize anchoring.
+
+    Therefore:
+      * Export writes  relativeCFrame = reference:ToObjectSpace(pivot)
+        verbatim. No bbox-bottom substitution, no surface anchoring,
+        no per-id branching.
+      * Import sends that same CFrame verbatim. No subtraction of
+        OriginalOffset.
+      * offsetCFrame is stored in the blueprint ONLY for dupe-key
+        differentiation, never applied to placement.
+
+    PlacementSurface / Surface_Default is recorded in the diagnostic
+    output for reference only. It is descriptive metadata about where
+    the pivot sits relative to the model's bbox (e.g. "Back" for
+    wall-mounted items whose pivot is above the bbox bottom); it does
+    NOT change placement. The remote anchors on the pivot, full stop.
+
+    Debug:
+        Scan Target    -- deep-diagnose first 50 models
+        Deep Scan All  -- deep-diagnose all (capped at 300)
+        Diff Templates -- one summary line per distinct id
+]]
+
+local Players           = game:GetService("Players")
+local Workspace         = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+	error("Blueprint Manager must run from a LocalScript.")
+end
+
+local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+local PlaceFurnitureRemote = ReplicatedStorage
+	:WaitForChild("Relays")
+	:WaitForChild("House")
+	:WaitForChild("PlaceFurniture")
+
+local RSFurniture = ReplicatedStorage:WaitForChild("Furniture")
+
+--------------------------------------------------
+-- FURNITURE ID CACHE
+--------------------------------------------------
+
+local furnitureIdCache = {}
+local templateById    = {}
+
+local function findTemplateModel(button)
+	if not button then return nil end
+	if button:IsA("Model") then return button end
+	for _, d in ipairs(button:GetChildren()) do
+		if d:IsA("Model") then return d end
+	end
+	for _, d in ipairs(button:GetDescendants()) do
+		if d:IsA("Model") then return d end
+	end
+	return nil
+end
+
+local function cacheFurniture(button)
+	if not button:IsA("ImageButton") then return end
+	local id = button:FindFirstChild("Id")
+	if id then
+		furnitureIdCache[string.lower(button.Name)] = id.Value
+		templateById[tostring(id.Value)] = button
+	end
+end
+
+for _, button in ipairs(RSFurniture:GetChildren()) do
+	cacheFurniture(button)
+end
+RSFurniture.ChildAdded:Connect(cacheFurniture)
+
+local function getTemplate(id)
+	return id and templateById[tostring(id)] or nil
+end
+
+--------------------------------------------------
+-- BUILDING BLOCK IDS (use the original block placement format)
+--------------------------------------------------
+
+local BUILDING_BLOCK_IDS = {
+	["355"] = true,
+	["959"] = true,
+	["1167"] = true,
+	["1286"] = true,
+}
+
+local function isBuildingBlockId(id)
+	return BUILDING_BLOCK_IDS[tostring(id)] == true
+end
+
+local function colorToHex(c)
+	local r = math.clamp(math.floor(c.R * 255 + 0.5), 0, 255)
+	local g = math.clamp(math.floor(c.G * 255 + 0.5), 0, 255)
+	local b = math.clamp(math.floor(c.B * 255 + 0.5), 0, 255)
+	return string.format("%02x%02x%02x", r, g, b)
+end
+
+local function getBlockKey(id, relCF, size, hex)
+	local function roundBlock(n, step) return math.floor(n / step + 0.5) * step end
+	local p = relCF.Position
+	local _, _, _, r00,r01,r02,r10,r11,r12,r20,r21,r22 = relCF:GetComponents()
+	return string.format(
+		"%s|%.1f,%.1f,%.1f|%.1f,%.1f,%.1f|%s|%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
+		tostring(id), roundBlock(p.X, 0.1), roundBlock(p.Y, 0.1), roundBlock(p.Z, 0.1),
+		roundBlock(size.X, 0.1), roundBlock(size.Y, 0.1), roundBlock(size.Z, 0.1), tostring(hex),
+		roundBlock(r00,0.01),roundBlock(r01,0.01),roundBlock(r02,0.01),
+		roundBlock(r10,0.01),roundBlock(r11,0.01),roundBlock(r12,0.01),
+		roundBlock(r20,0.01),roundBlock(r21,0.01),roundBlock(r22,0.01)
+	)
+end
+
+--------------------------------------------------
+-- SETTINGS
+--------------------------------------------------
+
+local settings = {
+	dupeSafety     = true,
+	biggerExporter = false,
+	defaultColor   = false,
+	buildTarget    = "House",
+}
+
+local PARTS_PER_BOX = 500
+local MAX_BOXES     = 9
+
+local importPaused  = false
+local importRunning = false
+local minimized     = false
+
+local setGuiMinimized
+local switchTab
+
+--------------------------------------------------
+-- DEBUG BUFFER
+--------------------------------------------------
+
+local debugBuffer = {}
+local DEBUG_MAX_LINES = 6000
+
+local function dbg(fmt, ...)
+	local line
+	if select("#", ...) > 0 then
+		local ok, formatted = pcall(string.format, fmt, ...)
+		line = ok and formatted or tostring(fmt)
+	else
+		line = tostring(fmt)
+	end
+	debugBuffer[#debugBuffer + 1] = line
+	if #debugBuffer > DEBUG_MAX_LINES then
+		table.remove(debugBuffer, 1)
+	end
+	print("[BPM] " .. line)
+end
+
+local function dbgClear() debugBuffer = {} end
+local function dbgText() return table.concat(debugBuffer, "\n") end
+
+--------------------------------------------------
+-- COLORS
+--------------------------------------------------
+
+local C = {
+	bg        = Color3.fromRGB(22, 22, 28),
+	panel     = Color3.fromRGB(30, 30, 38),
+	card      = Color3.fromRGB(38, 38, 48),
+	input     = Color3.fromRGB(28, 28, 36),
+	accent    = Color3.fromRGB(80, 130, 220),
+	success   = Color3.fromRGB(60, 170, 90),
+	warn      = Color3.fromRGB(200, 140, 40),
+	danger    = Color3.fromRGB(200, 70, 70),
+	pause     = Color3.fromRGB(180, 130, 40),
+	resume    = Color3.fromRGB(60, 160, 100),
+	tabActive = Color3.fromRGB(80, 130, 220),
+	tabInact  = Color3.fromRGB(42, 42, 54),
+	text      = Color3.new(1, 1, 1),
+	textMuted = Color3.fromRGB(160, 160, 175),
+	border    = Color3.fromRGB(55, 55, 70),
+}
+
+--------------------------------------------------
+-- GUI HELPERS
+--------------------------------------------------
+
+local function corner(inst, r)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, r or 6)
+	c.Parent = inst
+	return c
+end
+
+local function pad(inst, l, r, t, b)
+	local p = Instance.new("UIPadding")
+	p.PaddingLeft   = UDim.new(0, l or 0)
+	p.PaddingRight  = UDim.new(0, r or 0)
+	p.PaddingTop    = UDim.new(0, t or 0)
+	p.PaddingBottom = UDim.new(0, b or 0)
+	p.Parent = inst
+	return p
+end
+
+local function stroke(inst, color, thickness)
+	local s = Instance.new("UIStroke")
+	s.Color     = color or C.border
+	s.Thickness = thickness or 1
+	s.Parent    = inst
+	return s
+end
+
+--------------------------------------------------
+-- GUI ROOT
+--------------------------------------------------
+
+local oldGui = playerGui:FindFirstChild("BlueprintManager")
+if oldGui then oldGui:Destroy() end
+
+local gui = Instance.new("ScreenGui")
+gui.Name           = "BlueprintManager"
+gui.ResetOnSpawn   = false
+gui.Parent         = playerGui
+
+local frame = Instance.new("Frame")
+frame.Name             = "MainFrame"
+frame.Size             = UDim2.new(0, 460, 0, 400)
+frame.Position         = UDim2.new(0.5, -230, 0.5, -200)
+frame.BackgroundColor3 = C.bg
+frame.Active           = true
+frame.Draggable        = true
+frame.BorderSizePixel  = 0
+frame.Parent           = gui
+corner(frame, 8); stroke(frame, C.border, 1)
+
+local titleBar = Instance.new("Frame")
+titleBar.Size             = UDim2.new(1, 0, 0, 38)
+titleBar.BackgroundColor3 = C.panel
+titleBar.BorderSizePixel  = 0
+titleBar.Parent           = frame
+corner(titleBar, 8)
+
+local titleFill = Instance.new("Frame")
+titleFill.Size             = UDim2.new(1, 0, 0, 8)
+titleFill.Position         = UDim2.new(0, 0, 1, -8)
+titleFill.BackgroundColor3 = C.panel
+titleFill.BorderSizePixel  = 0
+titleFill.Parent           = titleBar
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size                   = UDim2.new(1, -80, 1, 0)
+titleLabel.Position               = UDim2.new(0, 14, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text                   = "Blueprint Manager"
+titleLabel.TextColor3             = C.text
+titleLabel.Font                   = Enum.Font.GothamBold
+titleLabel.TextSize               = 15
+titleLabel.TextXAlignment         = Enum.TextXAlignment.Left
+titleLabel.Parent                 = titleBar
+
+local settingsBtn = Instance.new("TextButton")
+settingsBtn.Size             = UDim2.new(0, 32, 0, 28)
+settingsBtn.Position         = UDim2.new(1, -70, 0, 5)
+settingsBtn.BackgroundColor3 = C.card
+settingsBtn.Text             = "⚙"
+settingsBtn.TextColor3       = C.textMuted
+settingsBtn.Font             = Enum.Font.GothamBold
+settingsBtn.TextSize         = 16
+settingsBtn.BorderSizePixel  = 0
+settingsBtn.Parent           = titleBar
+corner(settingsBtn, 5)
+
+local minimizeBtn = Instance.new("TextButton")
+minimizeBtn.Size             = UDim2.new(0, 32, 0, 28)
+minimizeBtn.Position         = UDim2.new(1, -36, 0, 5)
+minimizeBtn.BackgroundColor3 = C.card
+minimizeBtn.Text             = "—"
+minimizeBtn.TextColor3       = C.textMuted
+minimizeBtn.Font             = Enum.Font.GothamBold
+minimizeBtn.TextSize         = 14
+minimizeBtn.BorderSizePixel  = 0
+minimizeBtn.Parent           = titleBar
+corner(minimizeBtn, 5)
+
+local tabBar = Instance.new("Frame")
+tabBar.Size             = UDim2.new(1, -20, 0, 32)
+tabBar.Position         = UDim2.new(0, 10, 0, 44)
+tabBar.BackgroundColor3 = C.panel
+tabBar.BorderSizePixel  = 0
+tabBar.Parent           = frame
+corner(tabBar, 6)
+
+local exportTab = Instance.new("TextButton")
+exportTab.Size             = UDim2.new(1/3, -3, 1, -6)
+exportTab.Position         = UDim2.new(0, 3, 0, 3)
+exportTab.BackgroundColor3 = C.tabActive
+exportTab.Text             = "Export"
+exportTab.TextColor3       = C.text
+exportTab.Font             = Enum.Font.GothamBold
+exportTab.TextSize         = 12
+exportTab.BorderSizePixel  = 0
+exportTab.Parent           = tabBar
+corner(exportTab, 5)
+
+local importTab = Instance.new("TextButton")
+importTab.Size             = UDim2.new(1/3, -3, 1, -6)
+importTab.Position         = UDim2.new(1/3, 0, 0, 3)
+importTab.BackgroundColor3 = C.tabInact
+importTab.Text             = "Import"
+importTab.TextColor3       = C.textMuted
+importTab.Font             = Enum.Font.GothamBold
+importTab.TextSize         = 12
+importTab.BorderSizePixel  = 0
+importTab.Parent           = tabBar
+corner(importTab, 5)
+
+local debugTab = Instance.new("TextButton")
+debugTab.Size             = UDim2.new(1/3, -3, 1, -6)
+debugTab.Position         = UDim2.new(2/3, 0, 0, 3)
+debugTab.BackgroundColor3 = C.tabInact
+debugTab.Text             = "Debug"
+debugTab.TextColor3       = C.textMuted
+debugTab.Font             = Enum.Font.GothamBold
+debugTab.TextSize         = 12
+debugTab.BorderSizePixel  = 0
+debugTab.Parent           = tabBar
+corner(debugTab, 5)
+
+local playerRow = Instance.new("Frame")
+playerRow.Size                   = UDim2.new(1, -20, 0, 30)
+playerRow.Position               = UDim2.new(0, 10, 0, 82)
+playerRow.BackgroundTransparency = 1
+playerRow.Parent                 = frame
+
+local playerIcon = Instance.new("TextLabel")
+playerIcon.Size                   = UDim2.new(0, 22, 1, 0)
+playerIcon.BackgroundTransparency = 1
+playerIcon.Text                   = "👤"
+playerIcon.TextSize               = 14
+playerIcon.Font                   = Enum.Font.Gotham
+playerIcon.TextColor3             = C.textMuted
+playerIcon.Parent                 = playerRow
+
+local playerBox = Instance.new("TextBox")
+playerBox.Size              = UDim2.new(1, -26, 1, 0)
+playerBox.Position          = UDim2.new(0, 26, 0, 0)
+playerBox.Text              = ""
+playerBox.PlaceholderText   = "Player name (blank = yourself)"
+playerBox.BackgroundColor3  = C.input
+playerBox.TextColor3        = C.text
+playerBox.PlaceholderColor3 = C.textMuted
+playerBox.Font              = Enum.Font.Gotham
+playerBox.TextSize          = 13
+playerBox.BorderSizePixel   = 0
+playerBox.ClearTextOnFocus  = false
+playerBox.Parent            = playerRow
+corner(playerBox, 5); pad(playerBox, 8, 4, 0, 0)
+
+local contentY = 118
+local contentH = 272
+
+local contentFrame = Instance.new("Frame")
+contentFrame.Size                   = UDim2.new(1, -20, 0, contentH)
+contentFrame.Position               = UDim2.new(0, 10, 0, contentY)
+contentFrame.BackgroundTransparency = 1
+contentFrame.ClipsDescendants       = true
+contentFrame.Parent                 = frame
+
+--------------------------------------------------
+-- SERIALIZATION
+--------------------------------------------------
+
+local function cfToString(cf)
+	local c = {cf:GetComponents()}
+	for i, v in ipairs(c) do c[i] = string.format("%.5f", v) end
+	return table.concat(c, ",")
+end
+
+local function cfToReadable(cf)
+	if not cf then return "nil" end
+	local p = cf.Position
+	return string.format("pos(%.3f,%.3f,%.3f)", p.X, p.Y, p.Z)
+end
+
+local function stringToCFrame(s)
+	if not s or s == "" then return nil end
+	local n = {}
+	for v in string.gmatch(s, "[^,]+") do n[#n + 1] = tonumber(v) end
+	if #n ~= 12 then return nil end
+	for _, v in ipairs(n) do if v == nil then return nil end end
+	return CFrame.new(table.unpack(n))
+end
+
+local function sizeToString(v)
+	if not v then return "None" end
+	return string.format("%.5f,%.5f,%.5f", v.X, v.Y, v.Z)
+end
+
+local function stringToSize(s)
+	if not s or s == "None" then return nil end
+	local n = {}
+	for v in string.gmatch(s, "[^,]+") do n[#n + 1] = tonumber(v) end
+	if #n ~= 3 or not (n[1] and n[2] and n[3]) then return nil end
+	return Vector3.new(n[1], n[2], n[3])
+end
+
+local function colorToHex(c)
+	local r = math.clamp(math.floor(c.R * 255 + 0.5), 0, 255)
+	local g = math.clamp(math.floor(c.G * 255 + 0.5), 0, 255)
+	local b = math.clamp(math.floor(c.B * 255 + 0.5), 0, 255)
+	return string.format("%02X%02X%02X", r, g, b)
+end
+
+local function parsePalette(s)
+	local out = {}
+	for hex in string.gmatch(s or "", "[^,]+") do
+		hex = string.gsub(hex, "%s", "")
+		if string.match(hex, "^%x%x%x%x%x%x$") then
+			out[#out + 1] = string.upper(hex)
+		end
+	end
+	return out
+end
+
+local function vecToStr(v)
+	if typeof(v) == "Vector3" then
+		return string.format("(%.4f,%.4f,%.4f)", v.X, v.Y, v.Z)
+	end
+	return tostring(v)
+end
+
+--------------------------------------------------
+-- MODEL HELPERS
+--------------------------------------------------
+
+local function getColorIndex(name)
+	local lower = string.lower(name)
+	local d = string.match(lower, "^color(%d+)$")
+		or string.match(lower, "_color(%d+)$")
+	return d and tonumber(d) or nil
+end
+
+local function getModelPalette(model)
+	local byIndex = {}
+	for _, obj in ipairs(model:GetDescendants()) do
+		if obj:IsA("BasePart") then
+			local i = getColorIndex(obj.Name)
+			if i and not byIndex[i] then byIndex[i] = obj end
+		end
+	end
+	local idx = {}
+	for i in pairs(byIndex) do idx[#idx + 1] = i end
+	table.sort(idx)
+	local out = {}
+	for _, i in ipairs(idx) do
+		out[#out + 1] = colorToHex(byIndex[i].Color)
+	end
+	return out
+end
+
+local function getModelItemName(model)
+	local item = model:FindFirstChild("Item", true)
+	if item and item:IsA("StringValue") then
+		return item.Value, item
+	end
+	local attr = model:GetAttribute("Item")
+	if typeof(attr) == "string" then
+		return attr, nil
+	end
+	return nil, nil
+end
+
+local function resolveFurnitureId(model)
+	local name = getModelItemName(model)
+	if not name then return nil end
+	return furnitureIdCache[string.lower(name)]
+end
+
+local function isResizable(model)
+	return model:GetAttribute("Min") ~= nil
+		and model:GetAttribute("Max") ~= nil
+end
+
+-- Read the placement surface name (for diagnostic display only). This is
+-- descriptive metadata: "Bottom" pieces have pivot at bbox bottom, "Back"
+-- pieces are wall-mounted with pivot above bbox bottom, etc. It does NOT
+-- change placement — the remote always anchors on the pivot.
+local function getPlacementSurface(model)
+	local v = model:GetAttribute("PlacementSurface")
+	if typeof(v) == "string" and v ~= "" then return v end
+	v = model:GetAttribute("Surface_Default")
+	if typeof(v) == "string" and v ~= "" then return v end
+	local id = resolveFurnitureId(model)
+	if id then
+		local tmpl = findTemplateModel(getTemplate(id))
+		if tmpl then
+			local tv = tmpl:GetAttribute("PlacementSurface")
+			if typeof(tv) == "string" and tv ~= "" then return tv end
+			tv = tmpl:GetAttribute("Surface_Default")
+			if typeof(tv) == "string" and tv ~= "" then return tv end
+		end
+	end
+	return "Bottom"
+end
+
+local function readModelPlacement(model)
+	local pivot = model:GetPivot()
+	local bbCF, bbSize = model:GetBoundingBox()
+	local bottomY = bbCF.Position.Y - bbSize.Y / 2
+
+	local currentSize = model:GetAttribute("CurrentSize")
+	if typeof(currentSize) ~= "Vector3" then currentSize = nil end
+
+	local offset = model:GetAttribute("OriginalOffset")
+	if typeof(offset) ~= "CFrame" then offset = nil end
+
+	return pivot, bottomY, currentSize, offset, bbSize
+end
+
+-- Diagnostic-only helper: show what a face-anchored export WOULD send, so
+-- you can compare it to the pivot-verbatim value and confirm the remote is
+-- pivot-based (the two differ by the local-face offset).
+local function surfaceToLocalDir(surface)
+	local s = string.lower(surface or "bottom")
+	if s == "bottom" then return Vector3.new(0, -1, 0) end
+	if s == "top"    then return Vector3.new(0,  1, 0) end
+	if s == "front"  then return Vector3.new(0,  0, -1) end
+	if s == "back"   then return Vector3.new(0,  0,  1) end
+	if s == "left"   then return Vector3.new(-1, 0, 0) end
+	if s == "right"  then return Vector3.new( 1, 0, 0) end
+	return Vector3.new(0, -1, 0)
+end
+
+local function surfaceAnchor(pivot, bbSize, surface)
+	local dir = surfaceToLocalDir(surface)
+	local half = Vector3.new(bbSize.X * 0.5, bbSize.Y * 0.5, bbSize.Z * 0.5)
+	local localFaceCenter = Vector3.new(
+		dir.X * half.X,
+		dir.Y * half.Y,
+		dir.Z * half.Z
+	)
+	local faceWorld = pivot:PointToWorldSpace(localFaceCenter)
+	return CFrame.new(faceWorld) * pivot.Rotation
+end
+
+--------------------------------------------------
+-- TARGET RESOLUTION
+--------------------------------------------------
+
+local function getPlayerName()
+	return playerBox.Text ~= "" and playerBox.Text or LocalPlayer.Name
+end
+
+local function ownerMatches(owner, name)
+	if not owner then return false end
+	if owner:IsA("ObjectValue") then
+		return owner.Value ~= nil
+			and string.lower(owner.Value.Name) == string.lower(name)
+	elseif owner:IsA("StringValue") then
+		return string.lower(owner.Value) == string.lower(name)
+	end
+	local ok, v = pcall(function() return owner.Value end)
+	return ok and tostring(v) == name
+end
+
+local function findHousePlot(name)
+	local property = Workspace:FindFirstChild("Property")
+	local plots = property and property:FindFirstChild("Plots")
+	if not plots then warn("Property.Plots missing") return nil end
+
+	for _, plot in ipairs(plots:GetChildren()) do
+		local owners = {}
+		local direct = plot:FindFirstChild("Owner")
+		if direct then owners[#owners + 1] = direct end
+		for _, d in ipairs(plot:GetDescendants()) do
+			if d.Name == "Owner" and d ~= direct then
+				owners[#owners + 1] = d
+			end
+		end
+		for _, o in ipairs(owners) do
+			if ownerMatches(o, name) then return o.Parent end
+		end
+	end
+	return nil
+end
+
+local function findVehicle(folderName, name)
+	local folder = Workspace:FindFirstChild(folderName)
+	if not folder then warn("Workspace." .. folderName .. " missing") return nil end
+
+	for _, v in ipairs(folder:GetChildren()) do
+		local info = v:FindFirstChild("Info")
+		local owner = info and info:FindFirstChild("Owner")
+		local functional = v:FindFirstChild("Functional")
+		local bounds = functional and functional:FindFirstChild("Bounds")
+		if ownerMatches(owner, name) and bounds then return v end
+	end
+	return nil
+end
+
+local function getBuildTarget(name)
+	if settings.buildTarget == "House" then
+		local plot = findHousePlot(name)
+		if not plot then return nil end
+		local terrain = plot:FindFirstChild("Terrain", true)
+		local grass = terrain and terrain:FindFirstChild("Grass", true)
+		local active = plot:FindFirstChild("ActiveAssets", true)
+		local furniture = active and active:FindFirstChild("Furniture", true)
+		if not (grass and grass:IsA("BasePart")) then
+			warn("House plot missing Terrain.Grass"); return nil
+		end
+		if not furniture then
+			warn("House plot missing ActiveAssets.Furniture"); return nil
+		end
+		return {
+			instance  = plot,
+			reference = grass,
+			furniture = furniture,
+			kind      = "House",
+		}
+	end
+
+	local folderMap = {Car = "Cars", Trailer = "Trailers", Boat = "Boats"}
+	local folderName = folderMap[settings.buildTarget]
+	if not folderName then warn("Unknown target") return nil end
+
+	local vehicle = findVehicle(folderName, name)
+	if not vehicle then return nil end
+
+	local functional = vehicle:FindFirstChild("Functional")
+	local bounds = functional and functional:FindFirstChild("Bounds")
+	local models = functional and functional:FindFirstChild("Models")
+	local chassis = vehicle:FindFirstChild("Chassis", true)
+	local center = chassis and chassis:FindFirstChild("CenterPiece", true)
+
+	if not bounds then warn(vehicle:GetFullName() .. " missing Bounds") return nil end
+	if not models then warn(vehicle:GetFullName() .. " missing Models") return nil end
+	if not (center and center:IsA("BasePart")) then
+		warn(vehicle:GetFullName() .. " missing CenterPiece"); return nil
+	end
+
+	return {
+		instance  = vehicle,
+		reference = center,
+		furniture = models,
+		kind      = settings.buildTarget,
+	}
+end
+
+--------------------------------------------------
+-- DUPE KEY
+--------------------------------------------------
+
+local function round(n, step)
+	return math.floor(n / step + 0.5) * step
+end
+
+local function makeKey(id, relCF, size, palette, offsetCF)
+	local p = relCF.Position
+	local _,_,_, r00,r01,r02,r10,r11,r12,r20,r21,r22 = relCF:GetComponents()
+
+	local sizeStr = "None"
+	if size then
+		sizeStr = string.format("%.1f,%.1f,%.1f",
+			round(size.X, 0.1), round(size.Y, 0.1), round(size.Z, 0.1))
+	end
+
+	local offStr = "none"
+	if offsetCF then
+		local op = offsetCF.Position
+		offStr = string.format("%.2f,%.2f,%.2f",
+			round(op.X, 0.01), round(op.Y, 0.01), round(op.Z, 0.01))
+	end
+
+	return string.format(
+		"%s|%.1f,%.1f,%.1f|%s|%s|%s|%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
+		tostring(id),
+		round(p.X, 0.1), round(p.Y, 0.1), round(p.Z, 0.1),
+		sizeStr,
+		table.concat(palette, ","),
+		offStr,
+		round(r00,0.01), round(r01,0.01), round(r02,0.01),
+		round(r10,0.01), round(r11,0.01), round(r12,0.01),
+		round(r20,0.01), round(r21,0.01), round(r22,0.01)
+	)
+end
+
+--------------------------------------------------
+-- EXPORT VIEW
+--------------------------------------------------
+
+local exportView
+local exportBoxes  = {}
+local exportLabels = {}
+local totalPartsLabel
+
+local exportActionBar = Instance.new("Frame")
+exportActionBar.Size             = UDim2.new(1, 0, 0, 36)
+exportActionBar.Position         = UDim2.new(0, 0, 1, -36)
+exportActionBar.BackgroundColor3 = C.bg
+exportActionBar.BorderSizePixel  = 0
+exportActionBar.Parent           = contentFrame
+
+local exportActionBtn = Instance.new("TextButton")
+exportActionBtn.Size             = UDim2.new(0, 170, 0, 30)
+exportActionBtn.Position         = UDim2.new(0, 0, 0, 3)
+exportActionBtn.BackgroundColor3 = C.accent
+exportActionBtn.TextColor3       = C.text
+exportActionBtn.Font             = Enum.Font.GothamBold
+exportActionBtn.TextSize         = 13
+exportActionBtn.Text             = "⬆  Export Blueprint"
+exportActionBtn.BorderSizePixel  = 0
+exportActionBtn.Parent           = exportActionBar
+corner(exportActionBtn, 6)
+
+local exportWarnLabel = Instance.new("TextLabel")
+exportWarnLabel.Size             = UDim2.new(1, -180, 0, 30)
+exportWarnLabel.Position         = UDim2.new(0, 178, 0, 3)
+exportWarnLabel.BackgroundColor3 = Color3.fromRGB(80, 50, 20)
+exportWarnLabel.TextColor3       = Color3.fromRGB(255, 200, 100)
+exportWarnLabel.Font             = Enum.Font.Gotham
+exportWarnLabel.TextSize         = 11
+exportWarnLabel.TextWrapped      = true
+exportWarnLabel.Text             = "⚠  Over 700 entries — enable Bigger Exporter"
+exportWarnLabel.BorderSizePixel  = 0
+exportWarnLabel.Visible          = false
+exportWarnLabel.Parent           = exportActionBar
+corner(exportWarnLabel, 6); pad(exportWarnLabel, 6, 6, 0, 0)
+
+local function makeCodeBox(parent, h, y, size)
+	local box = Instance.new("TextBox")
+	box.Size             = UDim2.new(1, 0, 0, h)
+	box.Position         = UDim2.new(0, 0, 0, y)
+	box.BackgroundColor3 = C.input
+	box.TextColor3       = C.text
+	box.TextWrapped      = true
+	box.MultiLine        = true
+	box.ClearTextOnFocus = false
+	box.BorderSizePixel  = 0
+	box.Font             = Enum.Font.Code
+	box.TextSize         = size or 11
+	box.Text             = ""
+	box.Parent           = parent
+	corner(box, 5); pad(box, 6, 6, 4, 4)
+	return box
+end
+
+local function rebuildExportView()
+	if exportView then exportView:Destroy() end
+	exportBoxes, exportLabels = {}, {}
+	exportWarnLabel.Visible = false
+
+	local scrollH = contentH - 40
+
+	exportView = Instance.new("Frame")
+	exportView.Size                   = UDim2.new(1, 0, 0, scrollH)
+	exportView.BackgroundTransparency = 1
+	exportView.Parent                 = contentFrame
+
+	local header = Instance.new("Frame")
+	header.Size                   = UDim2.new(1, 0, 0, 22)
+	header.BackgroundTransparency = 1
+	header.Parent                 = exportView
+
+	local label = Instance.new("TextLabel")
+	label.Size                   = UDim2.new(0.5, 0, 1, 0)
+	label.BackgroundTransparency = 1
+	label.Text                   = settings.biggerExporter and "Export Boxes" or "Blueprint Code"
+	label.TextColor3             = C.textMuted
+	label.Font                   = Enum.Font.GothamBold
+	label.TextSize               = 12
+	label.TextXAlignment         = Enum.TextXAlignment.Left
+	label.Parent                 = header
+
+	totalPartsLabel = Instance.new("TextLabel")
+	totalPartsLabel.Size                   = UDim2.new(0.5, 0, 1, 0)
+	totalPartsLabel.Position               = UDim2.new(0.5, 0, 0, 0)
+	totalPartsLabel.BackgroundTransparency = 1
+	totalPartsLabel.TextColor3             = C.textMuted
+	totalPartsLabel.Font                   = Enum.Font.Gotham
+	totalPartsLabel.TextSize               = 12
+	totalPartsLabel.Text                   = "Furniture: —"
+	totalPartsLabel.TextXAlignment         = Enum.TextXAlignment.Right
+	totalPartsLabel.Parent                 = header
+
+	if not settings.biggerExporter then
+		exportBoxes[1]  = makeCodeBox(exportView, scrollH - 26, 26, 11)
+		exportLabels[1] = totalPartsLabel
+		return
+	end
+
+	local scroll = Instance.new("ScrollingFrame")
+	scroll.Size                   = UDim2.new(1, 0, 0, scrollH - 26)
+	scroll.Position               = UDim2.new(0, 0, 0, 26)
+	scroll.BackgroundTransparency = 1
+	scroll.ScrollBarThickness     = 4
+	scroll.ScrollBarImageColor3   = C.border
+	scroll.BorderSizePixel        = 0
+	scroll.Parent                 = exportView
+
+	local BOX_H, LABEL_H, GAP = 72, 20, 8
+	local y = 4
+
+	for i = 1, MAX_BOXES do
+		local row = Instance.new("Frame")
+		row.Size             = UDim2.new(1, -4, 0, LABEL_H + BOX_H + 6)
+		row.Position         = UDim2.new(0, 0, 0, y)
+		row.BackgroundColor3 = C.card
+		row.BorderSizePixel  = 0
+		row.Parent           = scroll
+		corner(row, 6)
+
+		local lbl = Instance.new("TextLabel")
+		lbl.Size                   = UDim2.new(1, -10, 0, LABEL_H)
+		lbl.Position               = UDim2.new(0, 8, 0, 3)
+		lbl.BackgroundTransparency = 1
+		lbl.TextColor3             = C.textMuted
+		lbl.Font                   = Enum.Font.GothamBold
+		lbl.TextSize               = 11
+		lbl.Text                   = "Box " .. i .. " — 0 furniture"
+		lbl.TextXAlignment         = Enum.TextXAlignment.Left
+		lbl.Parent                 = row
+
+		local box = Instance.new("TextBox")
+		box.Size             = UDim2.new(1, -10, 0, BOX_H)
+		box.Position         = UDim2.new(0, 5, 0, LABEL_H + 4)
+		box.BackgroundColor3 = C.input
+		box.TextColor3       = C.text
+		box.TextWrapped      = true
+		box.MultiLine        = true
+		box.ClearTextOnFocus = false
+		box.BorderSizePixel  = 0
+		box.Font             = Enum.Font.Code
+		box.TextSize         = 10
+		box.Text             = ""
+		box.Parent           = row
+		corner(box, 4); pad(box, 5, 5, 3, 3)
+
+		exportBoxes[i]  = box
+		exportLabels[i] = lbl
+		y += LABEL_H + BOX_H + 6 + GAP
+	end
+	scroll.CanvasSize = UDim2.new(0, 0, 0, y)
+end
+
+--------------------------------------------------
+-- IMPORT VIEW
+--------------------------------------------------
+
+local importView = Instance.new("Frame")
+importView.Size                   = UDim2.new(1, 0, 1, 0)
+importView.BackgroundTransparency = 1
+importView.Visible                = false
+importView.Parent                 = contentFrame
+
+local bpHeaderLabel = Instance.new("TextLabel")
+bpHeaderLabel.Size                   = UDim2.new(1, 0, 0, 18)
+bpHeaderLabel.BackgroundTransparency = 1
+bpHeaderLabel.Text                   = "Blueprint Code"
+bpHeaderLabel.TextColor3             = C.textMuted
+bpHeaderLabel.Font                   = Enum.Font.GothamBold
+bpHeaderLabel.TextSize               = 12
+bpHeaderLabel.TextXAlignment         = Enum.TextXAlignment.Left
+bpHeaderLabel.Parent                 = importView
+
+local blueprintBox = makeCodeBox(importView, contentH - 92, 22, 11)
+blueprintBox.PlaceholderText = "Paste blueprint code here…"
+
+local importActionBar = Instance.new("Frame")
+importActionBar.Size                   = UDim2.new(1, 0, 0, 70)
+importActionBar.Position               = UDim2.new(0, 0, 0, contentH - 66)
+importActionBar.BackgroundTransparency = 1
+importActionBar.Parent                 = importView
+
+local runBtn = Instance.new("TextButton")
+runBtn.Size             = UDim2.new(0, 150, 0, 30)
+runBtn.BackgroundColor3 = C.accent
+runBtn.TextColor3       = C.text
+runBtn.Font             = Enum.Font.GothamBold
+runBtn.TextSize         = 13
+runBtn.Text             = "▶  Run Blueprint"
+runBtn.BorderSizePixel  = 0
+runBtn.Parent           = importActionBar
+corner(runBtn, 6)
+
+local pauseBtn = Instance.new("TextButton")
+pauseBtn.Size             = UDim2.new(0, 110, 0, 30)
+pauseBtn.Position         = UDim2.new(0, 158, 0, 0)
+pauseBtn.BackgroundColor3 = C.card
+pauseBtn.TextColor3       = C.textMuted
+pauseBtn.Font             = Enum.Font.GothamBold
+pauseBtn.TextSize         = 13
+pauseBtn.Text             = "⏸  Pause"
+pauseBtn.BorderSizePixel  = 0
+pauseBtn.Visible          = false
+pauseBtn.Parent           = importActionBar
+corner(pauseBtn, 6)
+
+local progressLabel = Instance.new("TextLabel")
+progressLabel.Size                   = UDim2.new(1, 0, 0, 22)
+progressLabel.Position               = UDim2.new(0, 0, 0, 36)
+progressLabel.BackgroundTransparency = 1
+progressLabel.TextColor3             = C.textMuted
+progressLabel.Font                   = Enum.Font.Gotham
+progressLabel.TextSize               = 12
+progressLabel.TextXAlignment         = Enum.TextXAlignment.Left
+progressLabel.Text                   = ""
+progressLabel.Parent                 = importActionBar
+
+--------------------------------------------------
+-- DEBUG VIEW
+--------------------------------------------------
+
+local debugView = Instance.new("Frame")
+debugView.Size                   = UDim2.new(1, 0, 1, 0)
+debugView.BackgroundTransparency = 1
+debugView.Visible                = false
+debugView.Parent                 = contentFrame
+
+local debugHeader = Instance.new("Frame")
+debugHeader.Size                   = UDim2.new(1, 0, 0, 22)
+debugHeader.BackgroundTransparency = 1
+debugHeader.Parent                 = debugView
+
+local debugTitle = Instance.new("TextLabel")
+debugTitle.Size                   = UDim2.new(0.5, 0, 1, 0)
+debugTitle.BackgroundTransparency = 1
+debugTitle.Text                   = "Debug Output"
+debugTitle.TextColor3             = C.textMuted
+debugTitle.Font                   = Enum.Font.GothamBold
+debugTitle.TextSize               = 12
+debugTitle.TextXAlignment         = Enum.TextXAlignment.Left
+debugTitle.Parent                 = debugHeader
+
+local debugCount = Instance.new("TextLabel")
+debugCount.Size                   = UDim2.new(0.5, 0, 1, 0)
+debugCount.Position               = UDim2.new(0.5, 0, 0, 0)
+debugCount.BackgroundTransparency = 1
+debugCount.TextColor3             = C.textMuted
+debugCount.Font                   = Enum.Font.Gotham
+debugCount.TextSize               = 12
+debugCount.Text                   = "0 lines"
+debugCount.TextXAlignment         = Enum.TextXAlignment.Right
+debugCount.Parent                 = debugHeader
+
+local debugText = Instance.new("TextBox")
+debugText.Size             = UDim2.new(1, 0, 0, contentH - 22 - 74)
+debugText.Position         = UDim2.new(0, 0, 0, 22)
+debugText.BackgroundColor3 = C.input
+debugText.TextColor3       = C.text
+debugText.TextWrapped      = false
+debugText.MultiLine        = true
+debugText.ClearTextOnFocus = false
+debugText.BorderSizePixel  = 0
+debugText.Font             = Enum.Font.Code
+debugText.TextSize         = 10
+debugText.TextXAlignment   = Enum.TextXAlignment.Left
+debugText.TextYAlignment   = Enum.TextYAlignment.Top
+debugText.Text             = ""
+debugText.Parent           = debugView
+corner(debugText, 5); pad(debugText, 6, 6, 4, 4)
+
+local debugActionBar = Instance.new("Frame")
+debugActionBar.Size                   = UDim2.new(1, 0, 0, 32)
+debugActionBar.Position               = UDim2.new(0, 0, 1, -32)
+debugActionBar.BackgroundTransparency = 1
+debugActionBar.Parent                 = debugView
+
+local debugActionBar2 = Instance.new("Frame")
+debugActionBar2.Size                   = UDim2.new(1, 0, 0, 32)
+debugActionBar2.Position               = UDim2.new(0, 0, 1, -68)
+debugActionBar2.BackgroundTransparency = 1
+debugActionBar2.Parent                 = debugView
+
+local debugScanBtn = Instance.new("TextButton")
+debugScanBtn.Size             = UDim2.new(0, 120, 0, 28)
+debugScanBtn.Position         = UDim2.new(0, 0, 0, 2)
+debugScanBtn.BackgroundColor3 = C.accent
+debugScanBtn.TextColor3       = C.text
+debugScanBtn.Font             = Enum.Font.GothamBold
+debugScanBtn.TextSize         = 12
+debugScanBtn.Text             = "🔍 Scan Target"
+debugScanBtn.BorderSizePixel  = 0
+debugScanBtn.Parent           = debugActionBar
+corner(debugScanBtn, 5)
+
+local debugClearBtn = Instance.new("TextButton")
+debugClearBtn.Size             = UDim2.new(0, 100, 0, 28)
+debugClearBtn.Position         = UDim2.new(0, 126, 0, 2)
+debugClearBtn.BackgroundColor3 = C.card
+debugClearBtn.TextColor3       = C.textMuted
+debugClearBtn.Font             = Enum.Font.GothamBold
+debugClearBtn.TextSize         = 12
+debugClearBtn.Text             = "🗑 Clear"
+debugClearBtn.BorderSizePixel  = 0
+debugClearBtn.Parent           = debugActionBar
+corner(debugClearBtn, 5)
+
+local debugCopyBtn = Instance.new("TextButton")
+debugCopyBtn.Size             = UDim2.new(0, 100, 0, 28)
+debugCopyBtn.Position         = UDim2.new(0, 232, 0, 2)
+debugCopyBtn.BackgroundColor3 = C.success
+debugCopyBtn.TextColor3       = C.text
+debugCopyBtn.Font             = Enum.Font.GothamBold
+debugCopyBtn.TextSize         = 12
+debugCopyBtn.Text             = "📋 Copy"
+debugCopyBtn.BorderSizePixel  = 0
+debugCopyBtn.Parent           = debugActionBar
+corner(debugCopyBtn, 5)
+
+local debugDiffBtn = Instance.new("TextButton")
+debugDiffBtn.Size             = UDim2.new(0, 150, 0, 28)
+debugDiffBtn.Position         = UDim2.new(0, 0, 0, 2)
+debugDiffBtn.BackgroundColor3 = C.warn
+debugDiffBtn.TextColor3       = C.text
+debugDiffBtn.Font             = Enum.Font.GothamBold
+debugDiffBtn.TextSize         = 12
+debugDiffBtn.Text             = "🧮 Diff Templates"
+debugDiffBtn.BorderSizePixel  = 0
+debugDiffBtn.Parent           = debugActionBar2
+corner(debugDiffBtn, 5)
+
+local debugFullScanBtn = Instance.new("TextButton")
+debugFullScanBtn.Size             = UDim2.new(0, 160, 0, 28)
+debugFullScanBtn.Position         = UDim2.new(0, 156, 0, 2)
+debugFullScanBtn.BackgroundColor3 = C.danger
+debugFullScanBtn.TextColor3       = C.text
+debugFullScanBtn.Font             = Enum.Font.GothamBold
+debugFullScanBtn.TextSize         = 12
+debugFullScanBtn.Text             = "🔬 Deep Scan All"
+debugFullScanBtn.BorderSizePixel  = 0
+debugFullScanBtn.Parent           = debugActionBar2
+corner(debugFullScanBtn, 5)
+
+local function refreshDebugView()
+	debugText.Text  = dbgText()
+	debugCount.Text = #debugBuffer .. " lines"
+end
+
+debugClearBtn.MouseButton1Click:Connect(function()
+	dbgClear()
+	refreshDebugView()
+end)
+
+debugCopyBtn.MouseButton1Click:Connect(function()
+	if setclipboard then
+		setclipboard(dbgText())
+		debugCopyBtn.Text = "✔ Copied"
+		task.delay(1.2, function() debugCopyBtn.Text = "📋 Copy" end)
+	else
+		debugCopyBtn.Text = "No clipboard"
+		task.delay(1.2, function() debugCopyBtn.Text = "📋 Copy" end)
+	end
+end)
+
+--------------------------------------------------
+-- DEEP DIAGNOSTIC
+--------------------------------------------------
+
+local function diagModel(model, reference, idx)
+	local id, itemName = resolveFurnitureId(model), getModelItemName(model)
+	local pivot = model:GetPivot()
+	local bbCF, bbSize = model:GetBoundingBox()
+	local bbBottom = bbCF.Position.Y - bbSize.Y / 2
+	local pivotMinusBottom = pivot.Position.Y - bbBottom
+
+	local currentSize  = model:GetAttribute("CurrentSize")
+	local originalSize = model:GetAttribute("OriginalSize")
+	local scaleVector  = model:GetAttribute("ScaleVector")
+	local offset       = model:GetAttribute("OriginalOffset")
+	local minS = model:GetAttribute("Min")
+	local maxS = model:GetAttribute("Max")
+	local colorAttr = model:GetAttribute("Color")
+	local surface    = getPlacementSurface(model)
+
+	dbg("[D#%d] '%s' id=%s item=%s", idx, model.Name, tostring(id), tostring(itemName))
+	dbg("  instance pivot      = %s", cfToReadable(pivot))
+	dbg("  instance bboxCenter = %s  size=%s", cfToReadable(bbCF), vecToStr(bbSize))
+	dbg("  instance bboxBottom = %.5f  pivotY=%.5f  pivot-bottom=%+.5f",
+		bbBottom, pivot.Position.Y, pivotMinusBottom)
+	dbg("  CurrentSize  = %s", currentSize and vecToStr(currentSize) or "nil")
+	dbg("  OriginalSize = %s", originalSize and vecToStr(originalSize) or "nil")
+	dbg("  ScaleVector  = %s", scaleVector and vecToStr(scaleVector) or "nil")
+	dbg("  OriginalOffset = %s", offset and cfToReadable(offset) or "nil")
+	dbg("  PlacementSurface = %s (informational only)", tostring(surface))
+	dbg("  Min=%s  Max=%s  Color=%s", tostring(minS), tostring(maxS), tostring(colorAttr))
+
+	local _,_,_, r00,r01,r02,r10,r11,r12,r20,r21,r22 = pivot:GetComponents()
+	dbg("  basis right=(%+.4f,%+.4f,%+.4f) up=(%+.4f,%+.4f,%+.4f) look=(%+.4f,%+.4f,%+.4f)",
+		r00,r01,r02, r10,r11,r12, r20,r21,r22)
+
+	if reference then
+		local rel = reference.CFrame:ToObjectSpace(pivot)
+		local rp = rel.Position
+		dbg("  relCFrame pos (pivot-verbatim, USED BY EXPORT) = (%.5f,%.5f,%.5f)",
+			rp.X, rp.Y, rp.Z)
+		-- Diagnostic only: what a face-anchored export would have sent.
+		local faceAnchor = surfaceAnchor(pivot, bbSize, surface)
+		local faceRel = reference.CFrame:ToObjectSpace(faceAnchor)
+		local fp = faceRel.Position
+		dbg("  face-anchored rel pos (DIAGNOSTIC ONLY, NOT EXPORTED) = (%.5f,%.5f,%.5f)",
+			fp.X, fp.Y, fp.Z)
+	end
+
+	local tmplButton = getTemplate(id)
+	if tmplButton then
+		local tmplModel = findTemplateModel(tmplButton)
+		if tmplModel then
+			local tPivot = tmplModel:GetPivot()
+			local tCF, tSize = tmplModel:GetBoundingBox()
+			local tBottom = tCF.Position.Y - tSize.Y / 2
+			local tPivotMinusBottom = tPivot.Position.Y - tBottom
+			local tOffset = tmplModel:GetAttribute("OriginalOffset")
+			local tOriginalSize = tmplModel:GetAttribute("OriginalSize")
+			local tSurface = tmplModel:GetAttribute("PlacementSurface")
+				or tmplModel:GetAttribute("Surface_Default")
+
+			dbg("  TEMPLATE pivot=%s", cfToReadable(tPivot))
+			dbg("  TEMPLATE bboxBottom=%.5f  pivot-bottom=%+.5f", tBottom, tPivotMinusBottom)
+			dbg("  TEMPLATE bbox size=%s  OriginalSize=%s",
+				vecToStr(tSize), tOriginalSize and vecToStr(tOriginalSize) or "nil")
+			dbg("  TEMPLATE OriginalOffset=%s",
+				tOffset and cfToReadable(tOffset) or "nil")
+			dbg("  TEMPLATE PlacementSurface=%s", tostring(tSurface or "nil"))
+
+			local anchorDelta = pivotMinusBottom - tPivotMinusBottom
+			dbg("  >>> ANCHOR DELTA (inst - tmpl) = %+.5f", anchorDelta)
+
+			local sdx, sdy, sdz = bbSize.X - tSize.X, bbSize.Y - tSize.Y, bbSize.Z - tSize.Z
+			dbg("  >>> SIZE DELTA inst-tmpl = (%+.4f,%+.4f,%+.4f)", sdx, sdy, sdz)
+
+			local dot     = pivot.LookVector:Dot(tPivot.LookVector)
+			local dotUp   = pivot.UpVector:Dot(tPivot.UpVector)
+			local dotRight= pivot.RightVector:Dot(tPivot.RightVector)
+			local angLook = math.deg(math.acos(math.clamp(dot, -1, 1)))
+			local angUp   = math.deg(math.acos(math.clamp(dotUp, -1, 1)))
+			local angRight= math.deg(math.acos(math.clamp(dotRight, -1, 1)))
+			dbg("  >>> ORIENTATION DELTA deg  look=%.2f up=%.2f right=%.2f", angLook, angUp, angRight)
+		else
+			dbg("  TEMPLATE model not found under button '%s'", tmplButton:GetFullName())
+		end
+	else
+		dbg("  TEMPLATE not found for id=%s", tostring(id))
+	end
+	dbg("")
+end
+
+--------------------------------------------------
+-- SETTINGS PANEL
+--------------------------------------------------
+
+local settingsPanel = Instance.new("Frame")
+settingsPanel.Size             = UDim2.new(1, 0, 1, 0)
+settingsPanel.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+settingsPanel.BorderSizePixel  = 0
+settingsPanel.Visible          = false
+settingsPanel.ZIndex           = 10
+settingsPanel.Parent           = frame
+corner(settingsPanel, 8)
+
+local settingsTitle = Instance.new("TextLabel")
+settingsTitle.Size                   = UDim2.new(1, -50, 0, 40)
+settingsTitle.Position               = UDim2.new(0, 16, 0, 0)
+settingsTitle.BackgroundTransparency = 1
+settingsTitle.Text                   = "Settings"
+settingsTitle.TextColor3             = C.text
+settingsTitle.Font                   = Enum.Font.GothamBold
+settingsTitle.TextSize               = 16
+settingsTitle.TextXAlignment         = Enum.TextXAlignment.Left
+settingsTitle.ZIndex                 = 11
+settingsTitle.Parent                 = settingsPanel
+
+local closeSettingsBtn = Instance.new("TextButton")
+closeSettingsBtn.Size             = UDim2.new(0, 32, 0, 32)
+closeSettingsBtn.Position         = UDim2.new(1, -42, 0, 4)
+closeSettingsBtn.BackgroundColor3 = C.card
+closeSettingsBtn.Text             = "✕"
+closeSettingsBtn.TextColor3       = C.textMuted
+closeSettingsBtn.Font             = Enum.Font.GothamBold
+closeSettingsBtn.TextSize         = 14
+closeSettingsBtn.BorderSizePixel  = 0
+closeSettingsBtn.ZIndex           = 11
+closeSettingsBtn.Parent           = settingsPanel
+corner(closeSettingsBtn, 6)
+
+local divider = Instance.new("Frame")
+divider.Size             = UDim2.new(1, -32, 0, 1)
+divider.Position         = UDim2.new(0, 16, 0, 42)
+divider.BackgroundColor3 = C.border
+divider.BorderSizePixel  = 0
+divider.ZIndex           = 11
+divider.Parent           = settingsPanel
+
+local function makeToggleRow(labelText, desc, y, initial)
+	local row = Instance.new("Frame")
+	row.Size             = UDim2.new(1, -32, 0, 54)
+	row.Position         = UDim2.new(0, 16, 0, y)
+	row.BackgroundColor3 = C.card
+	row.BorderSizePixel  = 0
+	row.ZIndex           = 11
+	row.Parent           = settingsPanel
+	corner(row, 6); stroke(row, C.border, 1)
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size                   = UDim2.new(1, -70, 0, 22)
+	lbl.Position               = UDim2.new(0, 12, 0, 8)
+	lbl.BackgroundTransparency = 1
+	lbl.Text                   = labelText
+	lbl.TextColor3             = C.text
+	lbl.Font                   = Enum.Font.GothamBold
+	lbl.TextSize               = 13
+	lbl.TextXAlignment         = Enum.TextXAlignment.Left
+	lbl.ZIndex                 = 12
+	lbl.Parent                 = row
+
+	local d = Instance.new("TextLabel")
+	d.Size                   = UDim2.new(1, -70, 0, 16)
+	d.Position               = UDim2.new(0, 12, 0, 30)
+	d.BackgroundTransparency = 1
+	d.Text                   = desc
+	d.TextColor3             = C.textMuted
+	d.Font                   = Enum.Font.Gotham
+	d.TextSize               = 11
+	d.TextXAlignment         = Enum.TextXAlignment.Left
+	d.ZIndex                 = 12
+	d.Parent                 = row
+
+	local toggle = Instance.new("TextButton")
+	toggle.Size             = UDim2.new(0, 52, 0, 26)
+	toggle.Position         = UDim2.new(1, -62, 0.5, -13)
+	toggle.BorderSizePixel  = 0
+	toggle.Font             = Enum.Font.GothamBold
+	toggle.TextSize         = 12
+	toggle.ZIndex           = 12
+	toggle.Parent           = row
+	corner(toggle, 13)
+
+	local function refresh(v)
+		toggle.Text             = v and "ON" or "OFF"
+		toggle.BackgroundColor3 = v and C.success or Color3.fromRGB(90, 40, 40)
+		toggle.TextColor3       = C.text
+	end
+	refresh(initial)
+	return toggle, refresh
+end
+
+local targetSelector = Instance.new("Frame")
+targetSelector.Size             = UDim2.new(1, -32, 0, 72)
+targetSelector.Position         = UDim2.new(0, 16, 0, 52)
+targetSelector.BackgroundColor3 = C.card
+targetSelector.BorderSizePixel  = 0
+targetSelector.ZIndex           = 11
+targetSelector.Parent           = settingsPanel
+corner(targetSelector, 6); stroke(targetSelector, C.border, 1)
+
+local targetTitle = Instance.new("TextLabel")
+targetTitle.Size                   = UDim2.new(1, -16, 0, 22)
+targetTitle.Position               = UDim2.new(0, 12, 0, 6)
+targetTitle.BackgroundTransparency = 1
+targetTitle.Text                   = "Build Target"
+targetTitle.TextColor3             = C.text
+targetTitle.Font                   = Enum.Font.GothamBold
+targetTitle.TextSize               = 13
+targetTitle.TextXAlignment         = Enum.TextXAlignment.Left
+targetTitle.ZIndex                 = 12
+targetTitle.Parent                 = targetSelector
+
+local targetButtons = {}
+local targetChoices = {"House", "Car", "Trailer", "Boat"}
+
+local function refreshTargetButtons()
+	for target, btn in pairs(targetButtons) do
+		local sel = settings.buildTarget == target
+		btn.BackgroundColor3 = sel and C.accent or C.tabInact
+		btn.TextColor3       = sel and C.text or C.textMuted
+	end
+end
+
+for i, target in ipairs(targetChoices) do
+	local btn = Instance.new("TextButton")
+	btn.Size             = UDim2.new(0.25, -5, 0, 28)
+	btn.Position         = UDim2.new((i - 1) * 0.25, 4, 0, 36)
+	btn.BackgroundColor3 = C.tabInact
+	btn.TextColor3       = C.textMuted
+	btn.Text             = target
+	btn.Font             = Enum.Font.GothamBold
+	btn.TextSize         = 11
+	btn.BorderSizePixel  = 0
+	btn.ZIndex           = 12
+	btn.Parent           = targetSelector
+	corner(btn, 4)
+
+	targetButtons[target] = btn
+	btn.MouseButton1Click:Connect(function()
+		settings.buildTarget = target
+		refreshTargetButtons()
+	end)
+end
+refreshTargetButtons()
+
+local dupeToggle, refreshDupe = makeToggleRow(
+	"Dupe Safety",
+	"Skip furniture already placed on the target",
+	132, settings.dupeSafety)
+
+local biggerToggle, refreshBigger = makeToggleRow(
+	"Bigger Exporter",
+	"Split blueprints across up to 9 boxes",
+	196, settings.biggerExporter)
+
+local defaultColorToggle, refreshDefault = makeToggleRow(
+	"Default Color",
+	"Omit variation colors; use furniture defaults",
+	260, settings.defaultColor)
+
+dupeToggle.MouseButton1Click:Connect(function()
+	settings.dupeSafety = not settings.dupeSafety
+	refreshDupe(settings.dupeSafety)
+end)
+
+biggerToggle.MouseButton1Click:Connect(function()
+	settings.biggerExporter = not settings.biggerExporter
+	refreshBigger(settings.biggerExporter)
+	rebuildExportView()
+end)
+
+defaultColorToggle.MouseButton1Click:Connect(function()
+	settings.defaultColor = not settings.defaultColor
+	refreshDefault(settings.defaultColor)
+end)
+
+closeSettingsBtn.MouseButton1Click:Connect(function()
+	settingsPanel.Visible = false
+end)
+
+settingsBtn.MouseButton1Click:Connect(function()
+	if minimized and setGuiMinimized then setGuiMinimized(false) end
+	settingsPanel.Visible = true
+end)
+
+--------------------------------------------------
+-- EXISTING MAP
+--------------------------------------------------
+
+local function getFurnitureModels(folder)
+	local out = {}
+	for _, o in ipairs(folder:GetDescendants()) do
+		if o:IsA("Model") then out[#out + 1] = o end
+	end
+	return out
+end
+
+local function getExistingMap(target)
+	local map = {}
+	for _, model in ipairs(getFurnitureModels(target.furniture)) do
+		local id = resolveFurnitureId(model)
+		if id then
+			if isBuildingBlockId(id) then
+				-- Building blocks use the first script's per-BasePart key.
+				local colorValue = model:FindFirstChild("Color")
+				local itemValue = model:FindFirstChild("Item")
+				-- Building-block dupe detection works for every target type.
+				if colorValue and itemValue then
+					for _, part in ipairs(model:GetDescendants()) do
+						if part:IsA("BasePart") then
+							local rel = target.reference.CFrame:ToObjectSpace(part.CFrame)
+							map[getBlockKey(id, rel, part.Size, colorToHex(part.Color))] = true
+						end
+					end
+				end
+			else
+				local pivot, _, size, offset = readModelPlacement(model)
+				local rel = target.reference.CFrame:ToObjectSpace(pivot)
+				local palette = getModelPalette(model)
+				map[makeKey(id, rel, size, palette, offset)] = true
+			end
+		end
+	end
+	return map
+end
+--------------------------------------------------
+-- EXPORT
+--------------------------------------------------
+--
+-- UNIVERSAL: export writes the pivot CFrame verbatim. No bbox-bottom
+-- substitution, no surface anchoring, no per-id branching. This matches
+-- the remote's actual placement rule (place pivot at CFrame, apply
+-- OriginalOffset for resize only) for every piece.
+
+local function exportBlueprint()
+	local target = getBuildTarget(getPlayerName())
+	if not target then return end
+
+	dbg("==================================================")
+	dbg("EXPORT start  target=%s  ref=%s", target.kind, target.reference:GetFullName())
+	dbg("  reference cframe = %s", cfToReadable(target.reference.CFrame))
+
+	local entries = {}
+	for _, model in ipairs(getFurnitureModels(target.furniture)) do
+		local id = resolveFurnitureId(model)
+		local itemName = getModelItemName(model)
+		if id and itemName then
+			if isBuildingBlockId(id) then
+				-- Export blocks on House, Car, Trailer, and Boat.
+				-- Keep the original five-field, per-BasePart blueprint format.
+				local colorValue = model:FindFirstChild("Color")
+				if colorValue then
+					local blockCount = 0
+					for _, part in ipairs(model:GetDescendants()) do
+						if part:IsA("BasePart") then
+							local rel = target.reference.CFrame:ToObjectSpace(part.CFrame)
+							entries[#entries + 1] = table.concat({
+								tostring(id), cfToString(rel), tostring(colorValue.Value),
+								sizeToString(part.Size), colorToHex(part.Color),
+							}, "|")
+							blockCount += 1
+						end
+					end
+					dbg("    EXPORTED %d block parts id=%s target=%s",
+						blockCount, tostring(id), target.kind)
+				else
+					dbg("    BLOCK SKIPPED: missing Color value id=%s", tostring(id))
+				end
+			else
+				-- All non-block furniture keeps script 2's model/pivot format.
+				local colorHandle = model:GetAttribute("Color")
+				local pivot, bottomY, currentSize, offset = readModelPlacement(model)
+				local rel = target.reference.CFrame:ToObjectSpace(pivot)
+				dbg("    EXP id=%s surf=%s pivot=%s bboxBottomY=%.4f rel=%s",
+					tostring(id), tostring(getPlacementSurface(model)), cfToReadable(pivot), bottomY, cfToReadable(rel))
+				local palette = getModelPalette(model)
+				local sizeStr = (isResizable(model) and currentSize) and sizeToString(currentSize) or "None"
+				local offsetStr = offset and cfToString(offset) or ""
+				entries[#entries + 1] = table.concat({
+					tostring(id), cfToString(rel), tostring(colorHandle or ""),
+					sizeStr, table.concat(palette, ","), offsetStr,
+				}, "|")
+			end
+		end
+	end
+
+	if #entries == 0 then
+		warn("No valid furniture found under:", target.furniture:GetFullName())
+		return
+	end
+	totalPartsLabel.Text = "Entries: " .. #entries
+	dbg("EXPORT done: %d entries", #entries)
+
+	if not settings.biggerExporter then
+		if #entries > PARTS_PER_BOX then
+			exportBoxes[1].Text = ""; exportWarnLabel.Visible = true
+			warn("Over " .. PARTS_PER_BOX .. " entries — enable Bigger Exporter")
+			refreshDebugView(); return
+		end
+		exportWarnLabel.Visible = false
+		exportBoxes[1].Text = table.concat(entries, ";")
+	else
+		exportWarnLabel.Visible = false
+		local idx = 1
+		for i, box in ipairs(exportBoxes) do
+			local chunk = {}
+			for _ = 1, PARTS_PER_BOX do
+				if idx > #entries then break end
+				chunk[#chunk + 1] = entries[idx]; idx += 1
+			end
+			box.Text = table.concat(chunk, ";")
+			exportLabels[i].Text = "Box " .. i .. " — " .. #chunk .. " entries"
+		end
+		if idx <= #entries then warn("Exceeds capacity of " .. MAX_BOXES .. " boxes") end
+	end
+
+	local blueprint = target.instance:FindFirstChild("Blueprint")
+	if not blueprint then blueprint = Instance.new("StringValue"); blueprint.Name = "Blueprint"; blueprint.Parent = target.instance end
+	blueprint.Value = table.concat(entries, ";")
+	print(target.kind .. " blueprint exported:", #entries, "entries")
+	refreshDebugView()
+end
+exportActionBtn.MouseButton1Click:Connect(exportBlueprint)
+
+--------------------------------------------------
+-- IMPORT
+--------------------------------------------------
+--
+-- UNIVERSAL: send RelativeCFrame verbatim. No OriginalOffset subtraction.
+-- offsetCF is still parsed for the dupe key, never applied to placement.
+
+local function importBlueprint()
+	if importRunning then return end
+
+	local target = getBuildTarget(getPlayerName())
+	if not target then return end
+
+	local code = blueprintBox.Text
+	if code == "" then warn("No blueprint code") return end
+
+	local placingName = getPlayerName()
+	local placingFromUser = Players:FindFirstChild(placingName)
+	if not placingFromUser then
+		warn("Selected player not in server:", placingName); return
+	end
+
+	importRunning, importPaused = true, false
+
+	runBtn.Text             = "Running…"
+	runBtn.BackgroundColor3 = C.card
+	runBtn.TextColor3       = C.textMuted
+	pauseBtn.Visible        = true
+	pauseBtn.BackgroundColor3 = C.pause
+	pauseBtn.Text           = "⏸  Pause"
+	pauseBtn.TextColor3     = C.text
+	progressLabel.TextColor3 = C.textMuted
+
+	dbg("==================================================")
+	dbg("IMPORT start  target=%s  ref=%s",
+		target.kind, target.reference:GetFullName())
+	dbg("  reference cframe = %s", cfToReadable(target.reference.CFrame))
+
+	local existingMap = {}
+	if settings.dupeSafety then
+		progressLabel.Text = "Scanning existing furniture…"
+		existingMap = getExistingMap(target)
+	end
+
+	local entries = string.split(code, ";")
+	local total   = #entries
+	local placed, skipped, failed = 0, 0, 0
+
+	for idx, entry in ipairs(entries) do
+		while importPaused do task.wait(0.1) end
+
+		if entry ~= "" then
+			local data = string.split(entry, "|")
+			local id = data[1]
+			local relCF = stringToCFrame(data[2])
+			local color = data[3]
+			local isBlockEntry = isBuildingBlockId(id) and #data == 5
+
+			if isBlockEntry then
+				-- Original building-block format: id|part CFrame|model Color|part Size|part hex.
+				local partSize = stringToSize(data[4])
+				local hex = data[5]
+				if not (id and relCF and color and partSize and hex) then
+					failed += 1; dbg("    FAILED block parse"); warn("Invalid block entry:", entry)
+				else
+					local key = getBlockKey(id, relCF, partSize, hex)
+					if settings.dupeSafety and existingMap[key] then
+						skipped += 1; dbg("    SKIPPED block by dupe safety")
+					else
+						if settings.dupeSafety then existingMap[key] = true end
+						local finalRelCFrame = relCF * CFrame.new(0, -partSize.Y / 2, 0)
+						local args = {
+							PurchaseForPlace = true, Id = id,
+							RelativeCFrame = finalRelCFrame, Color = color,
+							Size = {X=partSize.X*10, Y=partSize.Y*10, Z=partSize.Z*10, P=10},
+							CustomColors = {hex}, PlacingFromUser = placingFromUser,
+						}
+						-- Match the normal furniture target contract.
+						if target.kind == "House" then
+							args.House = target.instance
+						else
+							args.Vehicle = target.instance
+						end
+
+						local ok, err = pcall(function()
+							return PlaceFurnitureRemote:InvokeServer(args)
+						end)
+						if ok then
+							placed += 1
+							dbg("    ✔ block part placed on %s", target.kind)
+						else
+							failed += 1
+							dbg("    ✖ BLOCK FAILED: %s", tostring(err))
+							warn("Block placement failed:", err)
+						end
+					end
+				end
+			else
+				-- Original script 2 format: model pivot is sent verbatim.
+				local size = stringToSize(data[4])
+				local palette = parsePalette(data[5])
+				local offsetCF = (data[6] and data[6] ~= "") and stringToCFrame(data[6]) or nil
+				dbg("--- IMP #%d id=%s size=%s color=%s offset=%s relPos=(%.4f,%.4f,%.4f)",
+					idx, tostring(id), size and vecToStr(size) or "None", tostring(color),
+					offsetCF and cfToReadable(offsetCF) or "none",
+					relCF and relCF.Position.X or 0, relCF and relCF.Position.Y or 0, relCF and relCF.Position.Z or 0)
+				if not (id and relCF and color) then
+					failed += 1; dbg("    FAILED parse"); warn("Invalid entry:", entry)
+				else
+					local key = makeKey(id, relCF, size, palette, offsetCF)
+					if settings.dupeSafety and existingMap[key] then
+						skipped += 1; dbg("    SKIPPED by dupe safety")
+					else
+						if settings.dupeSafety then existingMap[key] = true end
+						local args = {PurchaseForPlace=true, Id=id, RelativeCFrame=relCF, Color=color, PlacingFromUser=placingFromUser}
+						if target.kind == "House" then args.House = target.instance else args.Vehicle = target.instance end
+						if size then args.Size = {X=size.X*10, Y=size.Y*10, Z=size.Z*10, P=10} end
+						if not settings.defaultColor then args.CustomColors = palette end
+						local ok, err = pcall(function() return PlaceFurnitureRemote:InvokeServer(args) end)
+						if ok then placed += 1; dbg("    ✔ placed")
+						else failed += 1; dbg("    ✖ FAILED: %s", tostring(err)); warn("Placement failed:", err) end
+					end
+				end
+			end
+
+			progressLabel.Text =
+				"Placed " .. placed .. " / " .. total ..
+				" | Skipped " .. skipped ..
+				" | Failed "  .. failed
+		end
+	end
+
+	importRunning, importPaused = false, false
+
+	dbg("IMPORT done: placed=%d skipped=%d failed=%d",
+		placed, skipped, failed)
+
+	progressLabel.Text       = "✔  Done! Placed: " .. placed ..
+		" | Skipped: " .. skipped ..
+		" | Failed: "  .. failed
+	progressLabel.TextColor3 = C.success
+	runBtn.Text              = "▶  Run Blueprint"
+	runBtn.BackgroundColor3  = C.accent
+	runBtn.TextColor3        = C.text
+	pauseBtn.Visible         = false
+	refreshDebugView()
+end
+
+runBtn.MouseButton1Click:Connect(function()
+	task.spawn(importBlueprint)
+end)
+
+pauseBtn.MouseButton1Click:Connect(function()
+	if not importRunning then return end
+	importPaused = not importPaused
+	if importPaused then
+		pauseBtn.Text             = "▶  Resume"
+		pauseBtn.BackgroundColor3 = C.resume
+		progressLabel.Text        = "⏸  Paused — press Resume to continue"
+		progressLabel.TextColor3  = C.warn
+	else
+		pauseBtn.Text             = "⏸  Pause"
+		pauseBtn.BackgroundColor3 = C.pause
+		progressLabel.TextColor3  = C.textMuted
+	end
+end)
+
+--------------------------------------------------
+-- DEBUG: SCAN TARGET (deep, capped)
+--------------------------------------------------
+
+debugScanBtn.MouseButton1Click:Connect(function()
+	local target = getBuildTarget(getPlayerName())
+	if not target then
+		dbg("SCAN: no target resolved for '%s'", getPlayerName())
+		refreshDebugView()
+		return
+	end
+
+	dbg("==================================================")
+	dbg("SCAN target=%s  ref=%s",
+		target.kind, target.reference:GetFullName())
+	dbg("  reference cframe = %s", cfToReadable(target.reference.CFrame))
+
+	local count, diagCount = 0, 0
+	local DIAG_LIMIT = 50
+	for _, model in ipairs(getFurnitureModels(target.furniture)) do
+		count += 1
+		if diagCount < DIAG_LIMIT then
+			diagCount += 1
+			diagModel(model, target.reference, diagCount)
+		end
+	end
+	dbg("SCAN done: %d models (%d deep-diagnosed)", count, diagCount)
+	refreshDebugView()
+end)
+
+--------------------------------------------------
+-- DEBUG: DIFF TEMPLATES (one line per distinct id)
+--------------------------------------------------
+
+debugDiffBtn.MouseButton1Click:Connect(function()
+	local target = getBuildTarget(getPlayerName())
+	if not target then dbg("DIFF: no target") refreshDebugView() return end
+
+	dbg("==================================================")
+	dbg("DIFF TEMPLATES  ref=%s", target.reference:GetFullName())
+
+	local seen = {}
+	local rows = {}
+	for _, model in ipairs(getFurnitureModels(target.furniture)) do
+		local id = resolveFurnitureId(model)
+		if id and not seen[id] then
+			seen[id] = true
+			local pivot = model:GetPivot()
+			local bbCF, bbSize = model:GetBoundingBox()
+			local bbBottom = bbCF.Position.Y - bbSize.Y / 2
+			local pMinusB = pivot.Position.Y - bbBottom
+			local surface = getPlacementSurface(model)
+
+			local tmplButton = getTemplate(id)
+			local tmplModel = tmplButton and findTemplateModel(tmplButton) or nil
+			local anchorDelta, sizeDelta, angLook, hasTemplate = 0, Vector3.new(), 0, false
+			local tSurface
+			if tmplModel then
+				local tPivot = tmplModel:GetPivot()
+				local tCF, tSize = tmplModel:GetBoundingBox()
+				local tBottom = tCF.Position.Y - tSize.Y / 2
+				local tPMinusB = tPivot.Position.Y - tBottom
+				anchorDelta = pMinusB - tPMinusB
+				sizeDelta   = bbSize - tSize
+				angLook     = math.deg(math.acos(math.clamp(
+					pivot.LookVector:Dot(tPivot.LookVector), -1, 1)))
+				tSurface    = tmplModel:GetAttribute("PlacementSurface")
+					or tmplModel:GetAttribute("Surface_Default")
+				hasTemplate = true
+			end
+
+			rows[#rows + 1] = {
+				id = id, name = model.Name,
+				anchorDelta = anchorDelta, sizeDelta = sizeDelta,
+				angLook = angLook, hasTemplate = hasTemplate,
+				pMinusB = pMinusB, surface = surface, tSurface = tSurface,
+			}
+		end
+	end
+
+	table.sort(rows, function(a, b) return tostring(a.id) < tostring(b.id) end)
+	for _, r in ipairs(rows) do
+		if r.hasTemplate then
+			dbg("id=%-5s %-28s surf=%-6s tmplSurf=%-6s p-b=%+.4f  anchorD=%+.4f  sizeD=(%+.3f,%+.3f,%+.3f)  lookD=%.1f deg",
+				tostring(r.id), r.name, tostring(r.surface), tostring(r.tSurface or "nil"),
+				r.pMinusB, r.anchorDelta,
+				r.sizeDelta.X, r.sizeDelta.Y, r.sizeDelta.Z, r.angLook)
+		else
+			dbg("id=%-5s %-28s surf=%-6s p-b=%+.4f  (no template found)",
+				tostring(r.id), r.name, tostring(r.surface), r.pMinusB)
+		end
+	end
+	dbg("DIFF done: %d distinct ids", #rows)
+	refreshDebugView()
+end)
+
+--------------------------------------------------
+-- DEBUG: DEEP SCAN ALL (capped)
+--------------------------------------------------
+
+debugFullScanBtn.MouseButton1Click:Connect(function()
+	local target = getBuildTarget(getPlayerName())
+	if not target then dbg("DEEP: no target") refreshDebugView() return end
+	dbg("==================================================")
+	dbg("DEEP SCAN ALL  ref=%s", target.reference:GetFullName())
+	local n, cap = 0, 300
+	for _, model in ipairs(getFurnitureModels(target.furniture)) do
+		n += 1
+		if n > cap then
+			dbg("... capped at %d (raise cap in code if needed)", cap)
+			break
+		end
+		diagModel(model, target.reference, n)
+	end
+	dbg("DEEP SCAN done: %d models", math.min(n, cap))
+	refreshDebugView()
+end)
+
+--------------------------------------------------
+-- MINIMIZE / TABS / AUTOFILL
+--------------------------------------------------
+
+function setGuiMinimized(state)
+	minimized = state
+	tabBar.Visible       = not state
+	playerRow.Visible    = not state
+	contentFrame.Visible = not state
+	titleBar.Visible     = true
+	settingsBtn.Visible  = true
+	minimizeBtn.Visible  = true
+	if state then
+		settingsPanel.Visible = false
+		frame.Size = UDim2.new(0, 460, 0, 38)
+		minimizeBtn.Text = "□"
+	else
+		frame.Size = UDim2.new(0, 460, 0, 400)
+		minimizeBtn.Text = "—"
+	end
+end
+
+minimizeBtn.MouseButton1Click:Connect(function()
+	setGuiMinimized(not minimized)
+end)
+
+local function setTabVisual(active)
+	exportTab.BackgroundColor3 = (active == "Export") and C.tabActive or C.tabInact
+	exportTab.TextColor3       = (active == "Export") and C.text     or C.textMuted
+	importTab.BackgroundColor3 = (active == "Import") and C.tabActive or C.tabInact
+	importTab.TextColor3       = (active == "Import") and C.text     or C.textMuted
+	debugTab.BackgroundColor3  = (active == "Debug")  and C.tabActive or C.tabInact
+	debugTab.TextColor3        = (active == "Debug")  and C.text     or C.textMuted
+
+	exportView.Visible      = (active == "Export")
+	exportActionBar.Visible = (active == "Export")
+	importView.Visible      = (active == "Import")
+	debugView.Visible       = (active == "Debug")
+
+	if active == "Debug" then refreshDebugView() end
+end
+
+function switchTab(tab)
+	setTabVisual(tab)
+end
+
+exportTab.MouseButton1Click:Connect(function() switchTab("Export") end)
+importTab.MouseButton1Click:Connect(function() switchTab("Import") end)
+debugTab.MouseButton1Click:Connect(function() switchTab("Debug") end)
+
+playerBox.FocusLost:Connect(function()
+	local typed = playerBox.Text
+	if typed == "" then return end
+	local lower = string.lower(typed)
+	for _, p in ipairs(Players:GetPlayers()) do
+		if string.sub(string.lower(p.DisplayName), 1, #lower) == lower
+			or string.sub(string.lower(p.Name),        1, #lower) == lower then
+			playerBox.Text = p.Name
+			break
+		end
+	end
+end)
+
+--------------------------------------------------
+-- INIT
+--------------------------------------------------
+
+rebuildExportView()
+switchTab("Export")
+dbg("Blueprint Manager v5 (pivot-verbatim export; PlacementSurface is diagnostic only) loaded")
+refreshDebugView()
